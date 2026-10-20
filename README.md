@@ -1,5 +1,12 @@
 # Lead Extractor
 
+[![License](https://img.shields.io/github/license/alpotap/Lead-Extractor---Batch-LLM)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/alpotap/Lead-Extractor---Batch-LLM)](https://github.com/alpotap/Lead-Extractor---Batch-LLM/commits/main)
+[![Repository size](https://img.shields.io/github/repo-size/alpotap/Lead-Extractor---Batch-LLM)](https://github.com/alpotap/Lead-Extractor---Batch-LLM)
+[![GitHub stars](https://img.shields.io/github/stars/alpotap/Lead-Extractor---Batch-LLM)](https://github.com/alpotap/Lead-Extractor---Batch-LLM/stargazers)
+[![Open issues](https://img.shields.io/github/issues/alpotap/Lead-Extractor---Batch-LLM)](https://github.com/alpotap/Lead-Extractor---Batch-LLM/issues)
+[![Top language](https://img.shields.io/github/languages/top/alpotap/Lead-Extractor---Batch-LLM)](https://github.com/alpotap/Lead-Extractor---Batch-LLM)
+
 A local-first lead manager for any businesses. It accepts manually gathered text, HTML, and Markdown, extracts lead data with Ollama, and stores business records in a convenient way. The tool detects duplicates and merges them if new data is found.
 
 # How does it work?
