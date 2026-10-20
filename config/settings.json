@@ -1,0 +1,19 @@
+{
+  "data_path": "~/LeadData",
+  "ollama_url": "http://localhost:11434",
+  "selected_model": "gemma4:31b-cloud",
+  "scan_interval_minutes": 1,
+  "minimum_extraction_confidence": 0.35,
+  "raw_llm_log_max_bytes": 10000000,
+  "raw_llm_log_backups": 5,
+  "duplicate_weights": {
+    "email": 100,
+    "phone": 100,
+    "website_domain": 95,
+    "address": 80,
+    "contact": 70,
+    "company_name": 30,
+    "city": 20
+  },
+  "custom_statuses": []
+}

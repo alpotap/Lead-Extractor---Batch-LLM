@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="230" height="40" viewBox="0 0 230 40" role="img" aria-label="Lead Extractor">
+  <g fill="none" stroke="#1B7780" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2">
+    <path d="M4 4h23v31H4z"/>
+    <path d="M9 10h13M9 15h8M9 20l3 3-3 3M18 26h5"/>
+    <circle cx="25" cy="25" r="7" fill="#fff"/>
+    <path d="m30 30 6 6"/>
+  </g>
+  <text x="48" y="26" fill="#1B7780" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600">Lead Extractor</text>
+</svg>
