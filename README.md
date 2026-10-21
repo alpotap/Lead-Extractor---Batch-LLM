@@ -39,7 +39,7 @@ If Ollama is unavailable, you can still browse and edit existing company records
 
 ### 1. Add source material
 
-1. To submit a file, copy a `.html`, `.txt`, or `.md` file into `LeadData/ingest/incoming`. The default data folder is `C:\Users\<your-name>\LeadData`.
+1. To submit a file, copy a `.html`, `.htm`, `.txt`, or `.md` file into `LeadData/ingest/incoming`. Both `.html` and `.htm` files get the HTML preparation step. The default data folder is `C:\Users\<your-name>\LeadData`.
 2. Alternatively, open **Add a source**, paste text copied from a company or contact page, and save it. The saved text is picked up by the background scanner.
 3. To capture a live page, open **Add a source** → **Fetch from URL**, paste an `http` or `https` address, and select **Fetch page and save HTML**. The app opens the page in a headless browser, waits 10 seconds after the DOM is ready, and saves the rendered HTML under `LeadData/ingest/incoming`.
 4. The scanner checks the incoming folder every 1 minute. Keep the app running while you wait. It records the selected model and source filename in the processing logs.

@@ -26,7 +26,7 @@ from models.lead import (
 from services.ollama import extract_lead, list_models
 from services.storage import data_root, load_category_taxonomy, merge_company, write_json
 
-SUPPORTED_EXTENSIONS = {".txt", ".html", ".md"}
+SUPPORTED_EXTENSIONS = {".txt", ".html", ".htm", ".md"}
 _scanner_lock = threading.Lock()
 _scanner_started = False
 
@@ -229,7 +229,7 @@ def process_incoming(settings: dict[str, Any], only_names: set[str] | None = Non
         selected_model = settings.get("selected_model", "")
         try:
             prepared_path: Path | None = None
-            if source.suffix.lower() == ".html":
+            if source.suffix.lower() in {".html", ".htm"}:
                 text, prepared_path = prepare_html(source, root / "ingest" / "parsed")
                 logger.info(
                     "Prepared HTML source=%s parsed_file=%s source_bytes=%d prepared_chars=%d",
