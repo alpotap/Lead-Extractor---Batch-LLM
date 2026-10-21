@@ -13,8 +13,9 @@ Extract data from webpages automatically - all you need is a URL!
 3. Paste the URL in the tool. 
    The tool will process the data automatically, using your Ollama.
 4. Use the data! The tool will find:
-   **Contacts, emails, addresses, working hours, business definitions, links to socials** and assign **categories**. 
-   [<img src="https://img.youtube.com/vi/svA6KY2tfQg/0.jpg" title="" alt="Video Title" width="614">](https://youtu.be/svA6KY2tfQg)
+   **Contacts, emails, addresses, working hours, business definitions, links to socials** and assign **categories**.
+
+[<img src="https://img.youtube.com/vi/svA6KY2tfQg/0.jpg" title="" alt="Video Title" width="614">](https://youtu.be/svA6KY2tfQg)
 
 You want a faster way? Read the detailed guide below
 
