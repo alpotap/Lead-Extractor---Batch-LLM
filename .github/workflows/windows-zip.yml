@@ -1,0 +1,30 @@
+name: Windows ZIP
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Windows ZIP
+        shell: pwsh
+        run: .\scripts\build_release_zip.ps1
+      - name: Keep ZIP as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lead-Extractor-Windows
+          path: dist/Lead-Extractor-Windows.zip
+          if-no-files-found: error
+      - name: Attach ZIP to GitHub release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:GITHUB_REF_NAME" "dist/Lead-Extractor-Windows.zip" --clobber

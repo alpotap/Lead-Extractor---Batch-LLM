@@ -20,11 +20,11 @@ from models.lead import (
     normalize_opening_hours,
     normalize_social_links,
 )
-from services.ollama import list_models
+from services.ollama import is_local_url, is_ollama_cloud_url, list_models
 from services.pipeline import configure_logging, process_incoming, start_background_scanner
 from services.storage import (
     data_root, load_category_taxonomy, load_deleted_default_categories, load_companies, load_settings, read_json,
-    rebuild_companies, safe_stem, save_category_taxonomy, save_settings, write_json,
+    rebuild_companies, safe_stem, save_category_taxonomy, save_ollama_api_key, save_settings, write_json,
 )
 from services.web_capture import capture_rendered_html
 
@@ -181,25 +181,42 @@ with st.sidebar:
     st.header("Setup")
     data_path = st.text_input("Lead data folder", value=str(settings["data_path"]), help="Your business records and logs are stored here.")
     ollama_url = st.text_input("Ollama URL", value=settings["ollama_url"])
-    try:
-        available_models = list_models(ollama_url)
-        model_options = available_models or ([settings["selected_model"]] if settings["selected_model"] else [])
-        if available_models:
-            st.caption(f"{len(available_models)} Ollama model(s) available")
-        else:
-            st.warning("No Ollama models found. The lead list and manual editing still work.")
-    except Exception as exc:
-        model_options = [settings["selected_model"]] if settings["selected_model"] else []
-        st.warning(f"Ollama is unavailable: {exc}")
-    selected_index = model_options.index(settings["selected_model"]) if settings["selected_model"] in model_options else (0 if model_options else None)
-    selected_model = st.selectbox(
-        "Extraction model", options=model_options, index=selected_index,
-        placeholder="No model installed", key="model_choice", on_change=_save_model_selection,
-    )
+    ollama_api_key = str(settings.get("ollama_api_key", ""))
+    if not is_local_url(ollama_url):
+        ollama_api_key = st.text_input(
+            "Ollama API key", value=ollama_api_key, type="password", key="ollama-api-key-input",
+            help="Stored locally outside settings.json.",
+        )
+        st.caption("Add API key for Cloud hosted Ollama, leave empty for self hosted.")
+    cloud_ollama = is_ollama_cloud_url(ollama_url)
+    if cloud_ollama:
+        selected_model = st.text_input(
+            "Ollama Cloud model", value=str(settings.get("selected_model", "")),
+            placeholder="e.g. gemma4:31b-cloud", key="ollama-cloud-model-input",
+            help="Enter the exact model name supported by your Ollama Cloud account.",
+        )
+    else:
+        try:
+            available_models = list_models(ollama_url, ollama_api_key)
+            model_options = available_models or ([settings["selected_model"]] if settings["selected_model"] else [])
+            if available_models:
+                st.caption(f"{len(available_models)} Ollama model(s) available")
+            else:
+                st.warning("No Ollama models found. The lead list and manual editing still work.")
+        except Exception as exc:
+            model_options = [settings["selected_model"]] if settings["selected_model"] else []
+            st.warning(f"Ollama is unavailable: {exc}")
+        selected_index = model_options.index(settings["selected_model"]) if settings["selected_model"] in model_options else (0 if model_options else None)
+        selected_model = st.selectbox(
+            "Extraction model", options=model_options, index=selected_index,
+            placeholder="No model installed", key="model_choice", on_change=_save_model_selection,
+        )
     if st.button("Save setup", use_container_width=True):
         settings["data_path"] = data_path
         settings["ollama_url"] = ollama_url.rstrip("/")
-        settings["selected_model"] = selected_model or ""
+        settings["selected_model"] = str(selected_model or "").strip()
+        settings["ollama_api_key"] = ollama_api_key
+        save_ollama_api_key(ollama_api_key)
         save_settings(settings)
         st.success("Setup saved.")
         st.rerun()
@@ -240,15 +257,7 @@ with st.sidebar:
 
 if active_section == "Add a source":
     st.subheader("Add a source")
-    source_tab, url_tab = st.tabs(["Paste text", "Fetch from URL"])
-    with source_tab:
-        st.write("Paste text from a company or contact page. It will be saved and picked up by the next scan.")
-        pasted = st.text_area("Source text", height=220, placeholder="Paste source text…")
-        if st.button("Save source", type="primary", disabled=not pasted.strip()):
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            target = root / "ingest" / "incoming" / f"{stamp}.txt"
-            target.write_text(pasted.strip() + "\n", encoding="utf-8")
-            st.success(f"Saved {target.name}. It will be processed on the next scan.")
+    url_tab, source_tab = st.tabs(["Fetch from URL", "Paste text"])
     with url_tab:
         st.write("Load a web page in a browser, wait 10 seconds for dynamic content, and save the rendered HTML for processing.")
         page_url = st.text_input("Company page URL", placeholder="https://example.co.uk/contact")
@@ -264,6 +273,14 @@ if active_section == "Add a source":
                 st.success(f"Saved rendered HTML as {target.name}. It will be processed on the next scan.")
             except Exception as exc:
                 st.error(f"Could not fetch the page: {exc}")
+    with source_tab:
+        st.write("Paste text from a company or contact page. It will be saved and picked up by the next scan.")
+        pasted = st.text_area("Source text", height=220, placeholder="Paste source text…")
+        if st.button("Save source", type="primary", disabled=not pasted.strip()):
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            target = root / "ingest" / "incoming" / f"{stamp}.txt"
+            target.write_text(pasted.strip() + "\n", encoding="utf-8")
+            st.success(f"Saved {target.name}. It will be processed on the next scan.")
 
 if active_section == "Categories":
     taxonomy = load_category_taxonomy(root)
@@ -359,7 +376,9 @@ if active_section == "Review queue":
                     if st.button("Retry with selected model", key=f"retry-{review_file.stem}", disabled=not archived_source.exists()):
                         settings["data_path"] = str(root)
                         settings["ollama_url"] = ollama_url.rstrip("/")
-                        settings["selected_model"] = selected_model or ""
+                        settings["selected_model"] = str(selected_model or "").strip()
+                        settings["ollama_api_key"] = ollama_api_key
+                        save_ollama_api_key(ollama_api_key)
                         save_settings(settings)
                         if not incoming_source.exists():
                             shutil.copy2(archived_source, incoming_source)
@@ -473,15 +492,18 @@ button.addEventListener('click', async () => {{
             st.markdown("#### Company details")
             taxonomy = load_category_taxonomy(root)
             categories = sorted(taxonomy, key=str.casefold)
-            current_category = str(company.get("organization_category") or "unknown")
-            if current_category not in categories:
+            current_category = str(company.get("organization_category") or "")
+            if current_category.casefold() == "unknown":
+                current_category = ""
+            if current_category and current_category not in categories:
                 categories.append(current_category)
+            category_options = ["", *categories]
             category_col, subcategory_col = st.columns(2)
             with category_col:
                 category = st.selectbox(
-                    "Category", categories,
-                    index=categories.index(current_category),
-                    format_func=lambda value: value.replace("_", " ").title(),
+                    "Category", category_options,
+                    index=category_options.index(current_category),
+                    format_func=lambda value: value.replace("_", " ").title() if value else "—",
                     key=f"company-category-{safe_stem(company_id)}",
                 )
             with subcategory_col:
@@ -619,7 +641,9 @@ button.addEventListener('click', async () => {{
                     if st.button("Re-extract with selected model", key=f"reextract-{safe_stem(company_id)}", disabled=not archived_source.exists() or not selected_model):
                         settings["data_path"] = str(root)
                         settings["ollama_url"] = ollama_url.rstrip("/")
-                        settings["selected_model"] = selected_model or ""
+                        settings["selected_model"] = str(selected_model or "").strip()
+                        settings["ollama_api_key"] = ollama_api_key
+                        save_ollama_api_key(ollama_api_key)
                         save_settings(settings)
                         incoming_source = root / "ingest" / "incoming" / selected_source
                         if not incoming_source.exists():
@@ -727,13 +751,21 @@ button.addEventListener('click', async () => {{
                 st.session_state["show_advanced_search"] = not show_advanced_search
                 st.rerun()
 
-        category_options = sorted({str(company.get("organization_category") or "unknown") for company in companies})
+        category_options = sorted({
+            "" if str(company.get("organization_category") or "").casefold() == "unknown"
+            else str(company.get("organization_category") or "")
+            for company in companies
+        })
         location_options = sorted({
             location for company in companies
             for location in (company.get("locations", []) if isinstance(company.get("locations", []), list) else [company.get("locations")])
             if location
         })
         category_filter = st.session_state.get("saved_search_category", [])
+        category_filter = [
+            value for value in dict.fromkeys("" if str(value).casefold() == "unknown" else value for value in category_filter)
+            if value in category_options
+        ]
         location_filter = st.session_state.get("saved_search_location", [])
         added_after = st.session_state.get("saved_search_added_after")
         added_before = st.session_state.get("saved_search_added_before")
@@ -741,7 +773,7 @@ button.addEventListener('click', async () => {{
         if show_advanced_search:
             advanced_category, advanced_location, advanced_after, advanced_before, archived_col = st.columns([1.4, 1.5, 1, 1, 1.2])
             with advanced_category:
-                category_filter = st.multiselect("Category", category_options, default=category_filter, key="advanced-search-category", format_func=lambda value: value.replace("_", " ").title())
+                category_filter = st.multiselect("Category", category_options, default=category_filter, key="advanced-search-category", format_func=lambda value: value.replace("_", " ").title() if value else "—")
             with advanced_location:
                 location_filter = st.multiselect("Location", location_options, default=location_filter, key="advanced-search-location")
             with advanced_after:
@@ -766,7 +798,9 @@ button.addEventListener('click', async () => {{
                 _display(company.get("emails", [])), _display(company.get("phones", [])),
             ]).casefold()
             added = _date_value(str(company.get("first_seen", "")))
-            category = str(company.get("organization_category") or "unknown")
+            category = str(company.get("organization_category") or "")
+            if category.casefold() == "unknown":
+                category = ""
             locations = company.get("locations", [])
             locations = locations if isinstance(locations, list) else [locations]
             if query and query not in haystack:
@@ -787,7 +821,10 @@ button.addEventListener('click', async () => {{
             if sort_column == "Status":
                 return str(_crm(company_id).get("status") or "New").casefold()
             if sort_column == "Category":
-                return f"{record.get('organization_category') or 'unknown'} {record.get('subcategory') or ''}".casefold()
+                category_value = str(record.get("organization_category") or "")
+                if category_value.casefold() == "unknown":
+                    category_value = ""
+                return f"{category_value} {record.get('subcategory') or ''}".casefold()
             if sort_column == "Notes":
                 return len(_followup_notes(_crm(company_id).get("notes", [])))
             if sort_column == "Next follow-up":
@@ -814,7 +851,10 @@ button.addEventListener('click', async () => {{
                 crm = _crm(company_id)
                 note_count = len(_followup_notes(crm.get("notes", [])))
                 next_followup = _short_date(crm.get("next_followup")) or "—"
-                category_label = str(company.get("organization_category") or "unknown").replace("_", " ").title()
+                category_value = str(company.get("organization_category") or "")
+                if category_value.casefold() == "unknown":
+                    category_value = ""
+                category_label = category_value.replace("_", " ").title() if category_value else "—"
                 subcategory_label = str(company.get("subcategory") or "").strip().replace("_", " ")
                 category_display = f"{category_label} · {subcategory_label}" if subcategory_label else category_label
                 with st.container(key=f"company-list-row-{safe_stem(company_id)}"):

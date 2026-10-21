@@ -23,7 +23,7 @@ from models.lead import (
     normalize_opening_hours,
     normalize_social_links,
 )
-from services.ollama import extract_lead, list_models
+from services.ollama import extract_lead, is_ollama_cloud_url, list_models
 from services.storage import data_root, load_category_taxonomy, merge_company, write_json
 
 SUPPORTED_EXTENSIONS = {".txt", ".html", ".htm", ".md"}
@@ -171,7 +171,7 @@ def _normalize_extraction(raw: dict[str, Any], category_taxonomy: dict[str, list
         if item.casefold() == category_value.casefold()
         or item.replace("_", " ").casefold() == normalized_category
     ), None)
-    result["organization_category"] = canonical or "unknown"
+    result["organization_category"] = canonical or ""
     result["subcategory"] = str(result.get("subcategory") or "").strip()
     valid_subcategories = (category_taxonomy or {}).get(result["organization_category"], [])
     if result["subcategory"]:
@@ -184,7 +184,7 @@ def _confidence(record: dict[str, Any]) -> float:
     score = 0.0
     if record.get("company_name"):
         score += 0.4
-    if record.get("organization_category") != "unknown":
+    if record.get("organization_category") and str(record.get("organization_category")).casefold() != "unknown":
         score += 0.15
     if record.get("website"):
         score += 0.2
@@ -212,12 +212,17 @@ def process_incoming(settings: dict[str, Any], only_names: set[str] | None = Non
     root = data_root(settings)
     logger = configure_logging(root)
     counts = {"processed": 0, "review": 0, "errors": 0, "merged": 0, "new": 0}
-    try:
-        available_models = list_models(settings["ollama_url"])
-        model_check_error = ""
-    except Exception as exc:
+    cloud_ollama = is_ollama_cloud_url(settings["ollama_url"])
+    if cloud_ollama:
         available_models = []
-        model_check_error = str(exc)
+        model_check_error = ""
+    else:
+        try:
+            available_models = list_models(settings["ollama_url"], str(settings.get("ollama_api_key", "")))
+            model_check_error = ""
+        except Exception as exc:
+            available_models = []
+            model_check_error = str(exc)
     incoming = root / "ingest" / "incoming"
     for source in sorted(incoming.iterdir()):
         if not source.is_file() or source.suffix.lower() not in SUPPORTED_EXTENSIONS:
@@ -240,7 +245,9 @@ def process_incoming(settings: dict[str, Any], only_names: set[str] | None = Non
                 text = source.read_text(encoding="utf-8", errors="replace")
             if model_check_error:
                 raise ValueError(f"Could not verify local Ollama models: {model_check_error}")
-            if not selected_model or selected_model not in available_models:
+            if not selected_model:
+                raise ValueError("Enter and save an Ollama model before processing")
+            if not cloud_ollama and selected_model not in available_models:
                 raise ValueError("Select and save an installed Ollama model before processing")
             start_time = time.perf_counter()
             logger.info("Extraction started source=%s model=%s source_bytes=%d", source.name, selected_model, source.stat().st_size)
@@ -254,6 +261,7 @@ def process_incoming(settings: dict[str, Any], only_names: set[str] | None = Non
                 raw_log_max_bytes=int(settings.get("raw_llm_log_max_bytes", 10_000_000)),
                 raw_log_backups=int(settings.get("raw_llm_log_backups", 5)),
                 category_taxonomy=category_taxonomy,
+                api_key=str(settings.get("ollama_api_key", "")),
             )
             record = _normalize_extraction(raw, category_taxonomy)
             confidence = _confidence(record)

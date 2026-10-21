@@ -3,7 +3,9 @@ __pycache__/
 .venv/
 venv/
 .streamlit/secrets.toml
+config/secrets.json
 # Never commit local lead data or runtime-generated records.
 LeadData/
 data/
 *.log
+/dist/

@@ -11,6 +11,7 @@ import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 import urllib.request
 from typing import Any
 
@@ -53,12 +54,45 @@ def _raw_log_event(
     logger.info(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
 
 
-def _request(url: str, payload: dict[str, Any] | None = None, timeout: int = 30) -> Any:
+def is_local_url(url: str) -> bool:
+    """Return whether an Ollama endpoint points at this machine."""
+    try:
+        hostname = (urlparse(url).hostname or "").strip("[]").casefold()
+    except ValueError:
+        return False
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return True
+    if hostname == "::1":
+        return True
+    return hostname.startswith("127.")
+
+
+def is_ollama_cloud_url(url: str) -> bool:
+    """Identify Ollama's hosted API endpoint, where users enter model names."""
+    try:
+        parsed = urlparse(url.strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.casefold() == "https"
+        and (parsed.hostname or "").casefold() == "ollama.com"
+        and parsed.path in ("", "/")
+        and port in (None, 443)
+    )
+
+
+def _request(
+    url: str, payload: dict[str, Any] | None = None, timeout: int = 30, api_key: str = "",
+) -> Any:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    if api_key and not is_local_url(url):
+        headers["Authorization"] = f"Bearer {api_key.strip()}"
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"} if data is not None else {},
+        headers=headers,
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -76,6 +110,7 @@ def _generate_json(
     raw_log_path: Path | None,
     raw_log_max_bytes: int,
     raw_log_backups: int,
+    api_key: str = "",
 ) -> dict[str, Any]:
     request_payload = {
         "model": model,
@@ -86,7 +121,7 @@ def _generate_json(
     }
     request_time = datetime.now().astimezone().isoformat(timespec="seconds")
     try:
-        result = _request(base_url.rstrip("/") + "/api/generate", request_payload, timeout=300)
+        result = _request(base_url.rstrip("/") + "/api/generate", request_payload, timeout=300, api_key=api_key)
     except Exception as exc:
         error_body = ""
         if hasattr(exc, "read"):
@@ -144,9 +179,9 @@ def _generate_json(
     return extracted
 
 
-def list_models(base_url: str) -> list[str]:
+def list_models(base_url: str, api_key: str = "") -> list[str]:
     # Match the familiar Ollama CLI workflow when its executable is installed.
-    if shutil.which("ollama"):
+    if is_local_url(base_url) and shutil.which("ollama"):
         result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=10, check=True)
         models = []
         for line in result.stdout.splitlines()[1:]:
@@ -156,7 +191,7 @@ def list_models(base_url: str) -> list[str]:
         return sorted(models)
     # The local API remains a useful fallback when Ollama is available on PATH
     # only through a service wrapper or a nonstandard installation.
-    response = _request(base_url.rstrip("/") + "/api/tags", timeout=5)
+    response = _request(base_url.rstrip("/") + "/api/tags", timeout=5, api_key=api_key)
     return sorted(model["name"] for model in response.get("models", []) if model.get("name"))
 
 
@@ -170,6 +205,7 @@ def extract_lead(
     raw_log_max_bytes: int = 10_000_000,
     raw_log_backups: int = 5,
     category_taxonomy: dict[str, list[str]] | None = None,
+    api_key: str = "",
 ) -> dict[str, Any]:
     schema = json.dumps(EXTRACTION_SCHEMA, ensure_ascii=False, indent=2)
     # Keep prompts under the small default context window used by many local
@@ -179,7 +215,7 @@ def extract_lead(
         key: ([] if isinstance(value, list) else value)
         for key, value in EXTRACTION_TEMPLATE.items()
     }
-    taxonomy = category_taxonomy if category_taxonomy is not None else {category: [] for category in ORGANIZATION_CATEGORIES}
+    taxonomy = category_taxonomy if category_taxonomy is not None else {}
     taxonomy_prompt = "\n".join(
         f"- {category} (display name: {category.replace('_', ' ').title()}): {', '.join(subcategories) if subcategories else '(no subcategories listed)'}"
         for category, subcategories in taxonomy.items()
@@ -188,7 +224,7 @@ def extract_lead(
         prompt = f"""You extract publishing-related organization leads from supplied source text.
 Return exactly one JSON object and no markdown or commentary. Follow this schema exactly:
 {schema}
-Choose organization_category and subcategory from this user taxonomy when the source supports it. Use the category name exactly as written; use an empty subcategory when none fits. If no listed category fits, use unknown.
+Choose organization_category and subcategory from this user taxonomy when the source supports it. Use the category name exactly as written; use empty strings for both fields when no listed category fits or when no categories are listed.
 USER CATEGORY TAXONOMY:
 {taxonomy_prompt}
 Support English and Hebrew. Do not guess missing facts. Use empty strings and arrays when unknown.
@@ -205,6 +241,7 @@ SOURCE TEXT:
             base_url, model, prompt, source_file=source_file, task="full_extraction",
             segment=chunk_number, segment_count=len(chunks), raw_log_path=raw_log_path,
             raw_log_max_bytes=raw_log_max_bytes, raw_log_backups=raw_log_backups,
+            api_key=api_key,
         )
         extracted["contacts"] = normalize_contacts(extracted.get("contacts", []))
         extracted["social_links"] = normalize_social_links(extracted.get("social_links", []))
@@ -215,7 +252,7 @@ SOURCE TEXT:
                 if value and not combined[key]:
                     combined[key] = value
             elif key == "organization_category":
-                if value != "unknown" and combined[key] == "unknown":
+                if value and value.casefold() != "unknown" and not combined[key]:
                     combined[key] = value
             elif key == "contacts" and isinstance(value, list):
                 combined[key] = normalize_contacts(combined[key] + value)
@@ -255,6 +292,7 @@ SOURCE TEXT:
                 task="contact_followup", segment=1, segment_count=1,
                 raw_log_path=raw_log_path, raw_log_max_bytes=raw_log_max_bytes,
                 raw_log_backups=raw_log_backups,
+                api_key=api_key,
             )
             combined["contacts"] = normalize_contacts(
                 combined["contacts"] + normalize_contacts(contact_result.get("contacts", []))

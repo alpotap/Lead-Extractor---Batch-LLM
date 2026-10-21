@@ -2,10 +2,10 @@
 
 from typing import Any
 
-ORGANIZATION_CATEGORIES = ["publisher", "academic_publisher", "university_press", "self_publishing_service", "literary_agency", "magazine", "unknown"]
+ORGANIZATION_CATEGORIES: list[str] = []
 DEFAULT_STATUSES = ["New", "Researching", "Contacted", "Interested", "Demo Scheduled", "Customer", "Not Interested"]
 EXTRACTION_TEMPLATE: dict[str, Any] = {
-    "company_name": "", "organization_category": "unknown", "subcategory": "", "website": "", "emails": [],
+    "company_name": "", "organization_category": "", "subcategory": "", "website": "", "emails": [],
     "phones": [], "addresses": [], "locations": [], "contacts": [], "social_links": [],
     "opening_hours": [], "notes": [], "source_language": "",
 }

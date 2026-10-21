@@ -17,6 +17,7 @@ from models.lead import ORGANIZATION_CATEGORIES, empty_crm, normalize_contacts, 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_PATH = APP_ROOT / "config" / "settings.json"
+SECRETS_PATH = APP_ROOT / "config" / "secrets.json"
 TAXONOMY_FILENAME = "categories.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -44,6 +45,8 @@ def load_settings() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         loaded = {}
     settings = {**DEFAULT_SETTINGS, **loaded}
+    secrets = read_json(SECRETS_PATH, {})
+    settings["ollama_api_key"] = str(secrets.get("ollama_api_key", "")) if isinstance(secrets, dict) else ""
     settings["duplicate_weights"] = {
         **DEFAULT_SETTINGS["duplicate_weights"],
         **(loaded.get("duplicate_weights") or {}),
@@ -55,6 +58,7 @@ def load_settings() -> dict[str, Any]:
 def save_settings(settings: dict[str, Any]) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     portable = dict(settings)
+    portable.pop("ollama_api_key", None)
     configured_path = Path(os.path.expandvars(str(portable.get("data_path", "")))).expanduser()
     try:
         relative_to_home = configured_path.resolve().relative_to(Path.home().resolve())
@@ -64,6 +68,14 @@ def save_settings(settings: dict[str, Any]) -> None:
     temporary = SETTINGS_PATH.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(portable, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(SETTINGS_PATH)
+
+
+def save_ollama_api_key(api_key: str) -> None:
+    """Keep remote Ollama credentials outside the tracked settings file."""
+    if api_key.strip():
+        write_json(SECRETS_PATH, {"ollama_api_key": api_key.strip()})
+    else:
+        SECRETS_PATH.unlink(missing_ok=True)
 
 
 def data_root(settings: dict[str, Any]) -> Path:
@@ -77,7 +89,7 @@ def data_root(settings: dict[str, Any]) -> Path:
 
 
 def load_category_taxonomy(root: Path) -> dict[str, list[str]]:
-    """Load editable category/subcategory pairs, seeded with built-in categories."""
+    """Load only user-created category/subcategory pairs; new installs start empty."""
     saved = read_json(root / TAXONOMY_FILENAME, {})
     categories = saved.get("categories", {}) if isinstance(saved, dict) and "categories" in saved else saved
     deleted_defaults = saved.get("deleted_defaults", []) if isinstance(saved, dict) and "categories" in saved else []
@@ -87,7 +99,7 @@ def load_category_taxonomy(root: Path) -> dict[str, list[str]]:
         return taxonomy
     for raw_name, raw_subcategories in categories.items():
         name = str(raw_name).strip()
-        if not name:
+        if not name or name.casefold() == "unknown":
             continue
         canonical = next((
             entry for entry in taxonomy
@@ -313,9 +325,9 @@ def merge_company(root: Path, extracted: dict[str, Any], source_file: str, weigh
     if definite or likely:
         record, score = best
         record["company_name"] = record.get("company_name") or extracted.get("company_name", "")
-        current_category = str(record.get("organization_category") or "unknown")
-        extracted_category = str(extracted.get("organization_category") or "unknown")
-        if current_category == "unknown" and extracted_category != "unknown":
+        current_category = str(record.get("organization_category") or "")
+        extracted_category = str(extracted.get("organization_category") or "")
+        if current_category.casefold() in {"", "unknown"} and extracted_category.casefold() not in {"", "unknown"}:
             current_category = extracted_category
             record["organization_category"] = extracted_category
         extracted_subcategory = str(extracted.get("subcategory") or "")
@@ -343,7 +355,7 @@ def merge_company(root: Path, extracted: dict[str, Any], source_file: str, weigh
     record = {
         "company_id": company_id,
         "company_name": extracted["company_name"],
-        "organization_category": extracted.get("organization_category", "unknown"),
+        "organization_category": extracted.get("organization_category", ""),
         "subcategory": extracted.get("subcategory", ""),
         "website": extracted.get("website", ""),
         "emails": extracted.get("emails", []),
