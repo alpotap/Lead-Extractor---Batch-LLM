@@ -24,14 +24,21 @@ try {
         "README.md",
         "REFERENCE.md",
         "LICENSE",
+        "VERSION",
         "requirements.txt",
-        "Start Lead Desk.bat"
+        "Start Lead Desk.bat",
+        "docs/MACOS.md",
+        "docs/LINUX.md",
+        "Start Lead Extractor.command",
+        "Start Lead Extractor.sh"
     )
     foreach ($file in $files) {
-        Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination $packageDirectory
+        $destination = Join-Path $packageDirectory $file
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination $destination
     }
 
-    foreach ($directory in @("assets", "config", "models", "services")) {
+    foreach ($directory in @("assets", "config", "models", "services", "scripts")) {
         $source = Join-Path $repoRoot $directory
         $destination = Join-Path $packageDirectory $directory
         New-Item -ItemType Directory -Path $destination -Force | Out-Null

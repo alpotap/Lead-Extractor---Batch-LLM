@@ -1,0 +1,36 @@
+name: macOS and Linux ZIPs
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            platform: macos
+          - runner: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ZIP
+        run: bash scripts/build_release_zip.sh ${{ matrix.platform }}
+      - name: Keep ZIP as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lead-Extractor-${{ matrix.platform }}
+          path: dist/Lead-Extractor-${{ matrix.platform }}.zip
+          if-no-files-found: error
+      - name: Attach ZIP to GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "dist/Lead-Extractor-${{ matrix.platform }}.zip" --clobber

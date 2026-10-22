@@ -154,3 +154,8 @@ NOTE: if you add multiple sources for the same company - all details will be mer
 ## More detail
 
 See [detailed procedures, merging behavior, the UK publisher example, and data/log details](REFERENCE.md).
+
+## macOS and Linux
+
+- [macOS package and setup](docs/MACOS.md)
+- [Linux package and setup](docs/LINUX.md)
