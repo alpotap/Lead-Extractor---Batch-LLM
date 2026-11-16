@@ -15,7 +15,7 @@ Extract data from webpages automatically - all you need is a URL!
 4. Use the data! The tool will find:
    **Contacts, emails, addresses, working hours, business definitions, links to socials** and assign **categories**.
 
-[<img src="https://img.youtube.com/vi/svA6KY2tfQg/0.jpg" title="" alt="Video Title" width="614">](https://youtu.be/svA6KY2tfQg)
+![Video Title](https://img.youtube.com/vi/svA6KY2tfQg/0.jpg)
 
 You want a faster way? Read the detailed guide below
 
@@ -49,20 +49,28 @@ The app is ready to work immediately, but you can change a few things to make it
    
    1. Data location:
       
-      1. Expand the left pane.<img src="assets/2026-10-21-12-27-00-image.png" title="" alt="" data-align="center">
+      1. Expand the left pane.
+
+      ![](assets/2026-10-21-12-27-00-image.png)
       
       2. Change the Lead data folder to a custom directory.
-         After saving, the app will build the data structure automatically. If there is no folder it will be created.<img src="assets/2026-10-21-12-20-13-image.png" title="" alt="" data-align="center">
+         After saving, the app will build the data structure automatically. If there is no folder it will be created.
+
+      ![](assets/2026-10-21-12-20-13-image.png)
    
    2. Models:
       
       1. Local Ollama
          
          1. Change the model - they are auto discovered so you can select from the drop down.
-            Note - you don't need a smart model. The tools is built to do simple tasks so no thinking is required. (Save your tokens for other things).<img src="assets/2026-10-21-12-20-53-image.png" title="" alt="" data-align="center">
+            Note - you don't need a smart model. The tools is built to do simple tasks so no thinking is required. (Save your tokens for other things).
+
+      ![](assets/2026-10-21-12-20-53-image.png)
          
          2. Change the URL if he Ollama client is installed elsewhere.
-            You will have the option to add an API key but its not required.<img src="assets/2026-10-21-12-21-34-image.png" title="" alt="" data-align="center">
+            You will have the option to add an API key but its not required.
+
+      ![](assets/2026-10-21-12-21-34-image.png)
          
          3. Official Cloud Ollama service:
             
@@ -71,23 +79,33 @@ The app is ready to work immediately, but you can change a few things to make it
             2. Set your API key. Note - the API key is not stored securely, the app is intended to be used locally and not exposed to users of the internet.
                The app saves it in config/secrets.json
             
-            3. Enter the model name.<img src="assets/2026-10-21-12-22-37-image.png" title="" alt="" data-align="center">
+            3. Enter the model name.
+
+      ![](assets/2026-10-21-12-22-37-image.png)
          
-         4. Save settings.<img src="assets/2026-10-21-12-22-59-image.png" title="" alt="" data-align="center">
+         4. Save settings.
+
+      ![](assets/2026-10-21-12-22-59-image.png)
          
          5. Collapse the left pane.
 
 2. Add and use categories
    The app figures out and assigns categories automatically based on context of your inputs.
    
-   1. Open the **Categories** tab to manage categories and subcategories.<img src="assets/2026-10-21-12-27-35-image.png" title="" alt="" data-align="center">
+   1. Open the **Categories** tab to manage categories and subcategories.
+
+      ![](assets/2026-10-21-12-27-35-image.png)
    
    2. To create a new main category, enter its name. To add subcategories to an existing category, choose it from **Add subcategories to**. You can paste multiple subcategories, one per line.
    
-   3. Select **Save categories**. The category tree is saved in `LeadData/categories.json` and is available when editing company records and during future Ollama extractions.<img src="assets/2026-10-21-12-29-06-image.png" title="" alt="" data-align="center">
+   3. Select **Save categories**. The category tree is saved in `LeadData/categories.json` and is available when editing company records and during future Ollama extractions.
+
+      ![](assets/2026-10-21-12-29-06-image.png)
       
       3. To remove a category, choose it under **Delete a category or subcategory** and select **Delete category**. 
-         This also removes its subcategories from future choices. To remove only one subcategory, select its parent and child, then select **Delete subcategory**.<img src="assets/2026-10-21-12-29-56-image.png" title="" alt="" data-align="center">
+         This also removes its subcategories from future choices. To remove only one subcategory, select its parent and child, then select **Delete subcategory**.
+
+      ![](assets/2026-10-21-12-29-56-image.png)
 * Removing a category or subcategory only changes the taxonomy offered for new work. Existing company records keep their assigned category and subcategory; the old value remains available on that company’s edit form. Re-adding a built-in category makes it available again.
 
 * A fresh install starts without preset categories; unassigned category values display as `—` until you add categories.
@@ -106,7 +124,9 @@ NOTE: if you add multiple sources for the same company - all details will be mer
    
    3. Paste the URL of a business into the **Company page URL**
    
-   4. Press **Fetch page and save HTML**<img src="assets/2026-10-21-12-39-20-image.png" title="" alt="" data-align="center">
+   4. Press **Fetch page and save HTML**.
+
+      ![](assets/2026-10-21-12-39-20-image.png)
 
 2. HTML files (Fast because you do a lot at once)
    You save a bunch of html files, the tool processes them in the background. Benchmark - 20 pages a minute
@@ -121,9 +141,12 @@ NOTE: if you add multiple sources for the same company - all details will be mer
    
    5. The tool will process the files and add
       Demo:
+
       ![](assets/2026-10-21-12-57-45-10918%20%20vivaldi%20%20x%20%20October_21%20%2012.56.gif)
 
-3. You can view page source and copy paste the text manually into the app<img src="assets/2026-10-21-13-00-24-image.png" title="" alt="" data-align="center">
+3. You can view page source and copy paste the text manually into the app
+
+      ![](assets/2026-10-21-13-00-24-image.png)
 * The scanner checks the incoming folder every 1 minute. Keep the app running while you wait. It records the selected model and source filename in the processing logs.
 
 <!-- Screenshot: Companies and Add a source tabs -->
@@ -136,8 +159,11 @@ NOTE: if you add multiple sources for the same company - all details will be mer
 2. Click a company name to open its details.
 3. Review and edit company fields, contacts, social accounts, opening hours, and notes. Contacts are individual rows with a name, role, emails, and phones. Social accounts pair a platform name with a profile URL.
 4. Click **Save company changes** after editing company information.
-   <img src="assets/2026-10-21-13-03-17-image.png" title="" alt="" data-align="center">
-5. Use the follow-up controls to update status, rating, last-contacted date, and next follow-up date. Add follow-up notes as separate entries; edit or delete an individual note with its controls.<img src="assets/2026-10-21-13-04-17-image.png" title="" alt="" data-align="center">
+
+   ![](assets/2026-10-21-13-03-17-image.png)
+5. Use the follow-up controls to update status, rating, last-contacted date, and next follow-up date. Add follow-up notes as separate entries; edit or delete an individual note with its controls.
+
+      ![](assets/2026-10-21-13-04-17-image.png)
 6. Use **Copy as JSON** when you explicitly want a copy of the current company record in your clipboard and use it in some other tool
 7. Use **Archive** on a company record to hide it from the default company list. Archived companies remain available for duplicate matching when new sources are processed. Expand **Advanced search** and turn on **Show archived** to find or restore one.
 
