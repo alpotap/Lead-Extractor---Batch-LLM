@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 import json
 import html
+import re
 import shutil
+import socket
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import streamlit as st
 
@@ -19,13 +21,15 @@ from models.lead import (
     normalize_contacts,
     normalize_opening_hours,
     normalize_social_links,
+    EXTRACTION_TEMPLATE,
 )
 from services.ollama import is_local_url, is_ollama_cloud_url, list_models
 from services.pipeline import configure_logging, process_incoming, start_background_scanner
 from services.storage import (
-    data_root, load_category_taxonomy, load_deleted_default_categories, load_companies, load_settings, read_json,
+    company_files, data_root, load_category_taxonomy, load_deleted_default_categories, load_companies, load_settings, read_json,
     rebuild_companies, safe_stem, save_category_taxonomy, save_ollama_api_key, save_settings, write_json,
 )
+from models.lead import empty_crm
 from services.web_capture import capture_rendered_html
 
 st.set_page_config(page_title="Lead Extractor", page_icon="🔎", layout="wide", initial_sidebar_state="collapsed")
@@ -69,7 +73,7 @@ settings = load_settings()
 root = data_root(settings)
 start_background_scanner(settings)
 active_section = st.radio(
-    "Main navigation", ["Companies", "Add a source", "Categories", "Review queue"],
+    "Main navigation", ["Companies", "Add a source", "Create lead manually", "Categories", "Review queue"],
     horizontal=True, label_visibility="collapsed", key="main-navigation",
 )
 
@@ -95,6 +99,54 @@ def _short_date(value: Any) -> str:
 
 def _crm_path(company_id: str) -> Path:
     return root / "crm" / f"{safe_stem(company_id)}.json"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_crm_summaries(root_path: str, company_ids: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for company_id in company_ids:
+        record = read_json(Path(root_path) / "crm" / f"{safe_stem(company_id)}.json", {})
+        record = record if isinstance(record, dict) else {}
+        notes = record.get("notes", [])
+        summaries[company_id] = {
+            "status": record.get("status") or "New",
+            "note_count": len(_followup_notes(notes)),
+            "next_followup": record.get("next_followup", ""),
+        }
+    return summaries
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_company_summaries(root_path: str) -> list[dict[str, Any]]:
+    summaries = []
+    for path in company_files(Path(root_path)):
+        record = read_json(path, {})
+        if not isinstance(record, dict) or not record.get("company_id"):
+            continue
+        emails = record.get("emails", [])
+        emails = emails if isinstance(emails, list) else [emails]
+        phones = record.get("phones", [])
+        phones = phones if isinstance(phones, list) else [phones]
+        contacts = normalize_contacts(record.get("contacts", []))
+        email_count = len(set(str(value).strip() for value in emails if str(value).strip()))
+        phone_count = len(set(str(value).strip() for value in phones if str(value).strip()))
+        email_count += len({value for contact in contacts for value in contact.get("emails", [])} - set(str(value).strip() for value in emails if str(value).strip()))
+        phone_count += len({value for contact in contacts for value in contact.get("phones", [])} - set(str(value).strip() for value in phones if str(value).strip()))
+        summaries.append({
+            "company_id": str(record.get("company_id", "")),
+            "company_name": str(record.get("company_name") or ""),
+            "organization_category": str(record.get("organization_category") or ""),
+            "subcategory": str(record.get("subcategory") or ""),
+            "first_seen": str(record.get("first_seen") or ""),
+            "last_seen": str(record.get("last_seen") or ""),
+            "archived": bool(record.get("archived", False)),
+            "locations": [str(value) for value in (record.get("locations", []) if isinstance(record.get("locations", []), list) else [record.get("locations")]) if value],
+            "email_count": email_count,
+            "phone_count": phone_count,
+            "has_website": bool(str(record.get("website") or "").strip()),
+            "social_count": len(normalize_social_links(record.get("social_links", []))),
+        })
+    return summaries
 
 
 def _crm(company_id: str) -> dict[str, Any]:
@@ -147,6 +199,7 @@ def _followup_notes(value: Any) -> list[dict[str, str]]:
 
 def _save_crm(company_id: str, crm: dict[str, Any]) -> None:
     write_json(_crm_path(company_id), crm)
+    _cached_crm_summaries.clear()
 
 
 def _open_company(company_id: str) -> None:
@@ -155,8 +208,9 @@ def _open_company(company_id: str) -> None:
 
 def _sort_companies_by(column: str) -> None:
     current = st.session_state.get("company_sort_column", "Company")
+    descending = st.session_state.get("company_sort_descending", False)
     if current == column:
-        st.session_state["company_sort_descending"] = not st.session_state.get("company_sort_descending", False)
+        st.session_state["company_sort_descending"] = not descending
     else:
         st.session_state["company_sort_column"] = column
         st.session_state["company_sort_descending"] = False
@@ -233,6 +287,7 @@ with st.sidebar:
 
             try:
                 extraction_count, reviewed = rebuild_companies(root, settings["duplicate_weights"], update_progress)
+                _cached_company_summaries.clear()
                 company_count = len(load_companies(root))
                 review_files = list((root / "review").glob("*.review.json"))
                 missing_extractions = 0
@@ -255,24 +310,94 @@ with st.sidebar:
     with st.expander("Lead data and background scanning"):
         st.caption(f"Your lead files stay in `{root}` · Background scan every {settings['scan_interval_minutes']} minutes")
 
+    st.divider()
+    with st.expander("Network access"):
+        try:
+            lan_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                lan_socket.connect(("192.0.2.1", 80))
+                lan_ip = lan_socket.getsockname()[0]
+            finally:
+                lan_socket.close()
+            if lan_ip.startswith("127."):
+                raise OSError("No LAN address detected")
+            st.caption("Share this address with people on your local network:")
+            st.code(f"http://{lan_ip}:8501", language=None)
+        except OSError:
+            st.info("Could not detect a LAN IP address. Make sure the computer is connected to the network.")
+        st.caption("Others can connect while this app is running and their device can reach this computer on the network.")
+
+if active_section == "Create lead manually":
+    st.subheader("Create lead manually")
+    st.write("Add a company record directly, without fetching a page or running an extraction.")
+    with st.form("create-manual-lead"):
+        company_name = st.text_input("Company name *")
+        website = st.text_input("Website")
+        category_options = ["", *sorted(load_category_taxonomy(root), key=str.casefold)]
+        category = st.selectbox("Category", category_options, format_func=lambda value: value.replace("_", " ").title() if value else "—")
+        email_values = st.text_area("Emails · one per line", height=80)
+        phone_values = st.text_area("Phones · one per line", height=80)
+        address_values = st.text_area("Addresses · one per line", height=80)
+        location_values = st.text_area("Locations · one per line", height=80)
+        notes_values = st.text_area("Notes · one per line", height=100)
+        create_manual_lead = st.form_submit_button("Create lead", type="primary", disabled=not company_name.strip())
+    if create_manual_lead:
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        company_id = f"{safe_stem(company_name.strip())}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        record = dict(EXTRACTION_TEMPLATE)
+        record.update({
+            "company_id": company_id,
+            "company_name": company_name.strip(),
+            "organization_category": category,
+            "website": website.strip(),
+            "emails": [item.strip() for item in email_values.splitlines() if item.strip()],
+            "phones": [item.strip() for item in phone_values.splitlines() if item.strip()],
+            "addresses": [item.strip() for item in address_values.splitlines() if item.strip()],
+            "locations": [item.strip() for item in location_values.splitlines() if item.strip()],
+            "notes": [item.strip() for item in notes_values.splitlines() if item.strip()],
+            "sources": [], "first_seen": now, "last_seen": now, "schema_version": 1,
+        })
+        write_json(root / "companies" / f"{safe_stem(company_id)}.json", record)
+        write_json(root / "crm" / f"{safe_stem(company_id)}.json", empty_crm(company_id))
+        _cached_company_summaries.clear()
+        _cached_crm_summaries.clear()
+        st.success(f"Created lead: {company_name.strip()}")
+        st.session_state["selected_company_id"] = company_id
+        st.session_state["main-navigation"] = "Companies"
+        st.rerun()
+
 if active_section == "Add a source":
     st.subheader("Add a source")
     url_tab, source_tab = st.tabs(["Fetch from URL", "Paste text"])
     with url_tab:
-        st.write("Load a web page in a browser, wait 10 seconds for dynamic content, and save the rendered HTML for processing.")
-        page_url = st.text_input("Company page URL", placeholder="https://example.co.uk/contact")
-        if st.button("Fetch page and save HTML", type="primary", disabled=not page_url.strip()):
-            try:
-                with st.spinner("Loading page and waiting 10 seconds for content…"):
-                    html = capture_rendered_html(page_url, settle_seconds=10)
-                host = safe_stem(urlparse(page_url).hostname or "website")
-                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                target = root / "ingest" / "incoming" / f"web_{host}_{stamp}.html"
-                target.write_text(html, encoding="utf-8")
-                configure_logging(root).info("Captured rendered URL source url=%s file=%s html_chars=%d", page_url, target.name, len(html))
-                st.success(f"Saved rendered HTML as {target.name}. It will be processed on the next scan.")
-            except Exception as exc:
-                st.error(f"Could not fetch the page: {exc}")
+        st.write("Paste one or more page URLs, separated by commas or new lines. Each page is loaded in a browser, given 10 seconds for dynamic content, and saved for processing.")
+        page_urls_text = st.text_area("Company page URLs", height=140, placeholder="https://example.co.uk/contact\nhttps://example.com/about")
+        page_urls = list(dict.fromkeys(value.strip() for value in re.split(r"[,\n\r]+", page_urls_text) if value.strip()))
+        st.caption(f"{len(page_urls)} unique URL(s). Large batches run sequentially; allow roughly 10 seconds per page, plus page load time.")
+        if st.button("Fetch pages and save HTML", type="primary", disabled=not page_urls):
+            progress = st.progress(0, text=f"Starting batch of {len(page_urls)} URL(s)…")
+            status = st.empty()
+            results: list[dict[str, str]] = []
+            for index, page_url in enumerate(page_urls, start=1):
+                progress.progress((index - 1) / len(page_urls), text=f"Fetching {index}/{len(page_urls)}: {page_url}")
+                try:
+                    captured_html = capture_rendered_html(page_url, settle_seconds=10)
+                    host = safe_stem(urlparse(page_url).hostname or "website")
+                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    target = root / "ingest" / "incoming" / f"web_{host}_{stamp}.html"
+                    target.write_text(captured_html, encoding="utf-8")
+                    configure_logging(root).info("Captured rendered URL source url=%s file=%s html_chars=%d", page_url, target.name, len(captured_html))
+                    results.append({"#": str(index), "Status": "✅ Saved", "URL": page_url, "Details": target.name})
+                except Exception as exc:
+                    configure_logging(root).exception("Could not fetch URL source url=%s", page_url)
+                    results.append({"#": str(index), "Status": "❌ Failed", "URL": page_url, "Details": str(exc)})
+                status.dataframe(results, hide_index=True, use_container_width=True)
+            progress.progress(1.0, text=f"Finished: {sum(row['Status'] == '✅ Saved' for row in results)}/{len(page_urls)} saved")
+            succeeded = sum(row["Status"] == "✅ Saved" for row in results)
+            if succeeded == len(page_urls):
+                st.success(f"All {succeeded} page(s) saved. They will be processed on the next scan.")
+            else:
+                st.warning(f"{succeeded} of {len(page_urls)} page(s) saved; see the results above for failures. Failed URLs can be retried by pasting them again.")
     with source_tab:
         st.write("Paste text from a company or contact page. It will be saved and picked up by the next scan.")
         pasted = st.text_area("Source text", height=220, placeholder="Paste source text…")
@@ -354,13 +479,20 @@ if active_section == "Review queue":
                 review = {}
             source_name = str(review.get("source_file") or review_file.stem.removesuffix(".review"))
             created_at = str(review.get("created_at") or "")
-            date_value = _date_value(created_at) or datetime.fromtimestamp(review_file.stat().st_mtime).date()
+            try:
+                flagged_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                if flagged_at.tzinfo is not None:
+                    flagged_at = flagged_at.astimezone()
+            except ValueError:
+                flagged_at = datetime.fromtimestamp(review_file.stat().st_mtime)
+            date_value = flagged_at.date()
             age_days = (date.today() - date_value).days
-            label = f"{source_name} · {review.get('reason', 'needs review')} · {date_value.isoformat()}"
+            timestamp = flagged_at.strftime("%Y-%m-%d %H:%M:%S")
+            label = f"{source_name} · {review.get('reason', 'needs review')} · {timestamp}"
             with st.expander(label):
                 if age_days > 30:
                     st.warning(f"Older item · {age_days} days old. Check whether it still needs attention.")
-                st.write(f"**Flagged:** {date_value.isoformat()}")
+                st.write(f"**Flagged:** {timestamp}")
                 if review.get("error"):
                     st.error(str(review["error"]))
                 if review.get("confidence") is not None:
@@ -403,19 +535,22 @@ if active_section == "Review queue":
             st.caption(f"{dismissed.get('source_file') or dismissed_file.stem} · {dismissed_date.isoformat()}")
 
 if active_section == "Companies":
-    companies = load_companies(root)
-    company_by_id = {str(record.get("company_id")): record for record in companies}
-    selected_id = st.session_state.get("selected_company_id")
+    selected_id = str(st.query_params.get("company_id") or st.session_state.get("selected_company_id") or "")
+    selected_company = None
+    if selected_id:
+        with st.spinner("Loading company details…"):
+            record = read_json(root / "companies" / f"{safe_stem(str(selected_id))}.json", {})
+        selected_company = record if isinstance(record, dict) and record.get("company_id") else None
 
-    if selected_id and selected_id in company_by_id:
-        company = company_by_id[selected_id]
+    if selected_company:
+        company = selected_company
         company_id = str(company.get("company_id", ""))
         header_back, header_name, header_dates, header_copy, header_archive = st.columns([1.2, 2.8, 2.2, 1.4, 1.1], vertical_alignment="center")
         with header_back:
-            st.button(
-                "← Companies", key=f"company-back-{safe_stem(company_id)}",
-                on_click=lambda: st.session_state.pop("selected_company_id", None), use_container_width=True,
-            )
+            if st.button("← Companies", key=f"company-back-{safe_stem(company_id)}", use_container_width=True):
+                st.session_state.pop("selected_company_id", None)
+                st.query_params.clear()
+                st.rerun()
         with header_name:
             st.markdown(f"### {company.get('company_name') or 'Unnamed company'}")
         with header_dates:
@@ -485,6 +620,7 @@ button.addEventListener('click', async () => {{
             if st.button("Restore" if is_archived else "Archive", key=f"archive-company-{safe_stem(company_id)}", help="Archived companies stay available for matching new sources."):
                 company["archived"] = not is_archived
                 write_json(root / "companies" / f"{safe_stem(company_id)}.json", company)
+                _cached_company_summaries.clear()
                 st.rerun()
 
         company_column, followup_column = st.columns([3, 2], gap="small")
@@ -627,6 +763,7 @@ button.addEventListener('click', async () => {{
                     "last_seen": datetime.now().astimezone().isoformat(timespec="seconds"),
                 })
                 write_json(root / "companies" / f"{safe_stem(company_id)}.json", company)
+                _cached_company_summaries.clear()
                 st.success("Company record saved.")
                 st.rerun()
 
@@ -737,10 +874,27 @@ button.addEventListener('click', async () => {{
                         st.rerun()
 
     else:
+        with st.spinner("Loading companies…"):
+            companies = _cached_company_summaries(str(root))
         show_advanced_search = bool(st.session_state.get("show_advanced_search", False))
-        search_col, advanced_col = st.columns([2.8, 1.7], vertical_alignment="bottom")
+        search_col, refresh_col, columns_col, advanced_col = st.columns([2.8, 0.35, 0.9, 1.7], vertical_alignment="bottom")
         with search_col:
             search = st.text_input("Search company, contact, email, or phone")
+        with refresh_col:
+            if st.button("", key="refresh-companies", icon=":material/refresh:", help="Refresh companies from disk", use_container_width=True):
+                _cached_company_summaries.clear()
+                _cached_crm_summaries.clear()
+                st.rerun()
+        list_columns = ("Company", "Status", "Category", "Subcategory", "Email", "Website", "Phone", "Socials", "Created", "Notes", "Next follow-up", "Updated")
+        selected_columns = st.session_state.get("company_list_columns", list(list_columns))
+        selected_columns = [label for label in list_columns if label in selected_columns]
+        with columns_col:
+            with st.popover("Columns", use_container_width=True):
+                selected_columns = st.multiselect(
+                    "Visible columns", list_columns, default=selected_columns,
+                    key="company-list-column-picker",
+                )
+                st.session_state["company_list_columns"] = selected_columns
         with advanced_col:
             if st.button("▾ Advanced search" if not show_advanced_search else "▴ Advanced search", key="toggle-advanced-search", use_container_width=True):
                 if show_advanced_search:
@@ -761,6 +915,71 @@ button.addEventListener('click', async () => {{
             for location in (company.get("locations", []) if isinstance(company.get("locations", []), list) else [company.get("locations")])
             if location
         })
+        company_ids = tuple(str(company.get("company_id", "")) for company in companies)
+        crm_by_id = _cached_crm_summaries(str(root), company_ids)
+
+        status_options = sorted({str(crm_by_id.get(str(company.get("company_id", "")), {}).get("status") or "New") for company in companies}, key=str.casefold)
+        category_column_options = sorted({
+            "" if str(company.get("organization_category") or "").casefold() == "unknown" else str(company.get("organization_category") or "")
+            for company in companies
+        }, key=lambda value: value.casefold())
+        subcategory_options = sorted({str(company.get("subcategory") or "") for company in companies}, key=str.casefold)
+        column_filter_options = {
+            "Status": status_options,
+            "Category": category_column_options,
+            "Subcategory": subcategory_options,
+            "Website": ["Has entries", "No entries"],
+            "Phone": ["Has entries", "No entries"],
+            "Socials": ["Has entries", "No entries"],
+        }
+        column_filters = st.session_state.get("company_column_filters", {})
+        column_filters = {
+            label: [value for value in column_filters.get(label, options) if value in options]
+            for label, options in column_filter_options.items()
+        }
+
+        filter_controls = st.columns(6)
+        for filter_col, label in zip(filter_controls, column_filter_options):
+            with filter_col:
+                with st.popover(label, icon=":material/filter_alt:", key=f"filter-companies-{label}", use_container_width=True):
+                    st.markdown(f"**Filter {label}**")
+                    column_filters[label] = st.multiselect(
+                        "Options", column_filter_options[label],
+                        default=column_filters[label], key=f"company-filter-values-{label}",
+                        format_func=lambda value: value.replace("_", " ").title() if value else "—",
+                    )
+        st.session_state["company_column_filters"] = column_filters
+
+        primary_default = st.session_state.get("company_sort_column", "Company")
+        if "company-sort-primary-select" not in st.session_state:
+            st.session_state["company-sort-primary-select"] = primary_default
+        sort_controls = st.columns([1.5, 1.5, 0.7, 1.5, 0.7])
+        sort_column = sort_controls[0].selectbox("Sort by", list_columns, key="company-sort-primary-select")
+        sort_descending = sort_controls[1].checkbox(
+            "Descending", value=bool(st.session_state.get("company_sort_descending", False)),
+            key="company-sort-primary-desc",
+        )
+        secondary_options = [None, *[label for label in list_columns if label != sort_column]]
+        previous_secondary = st.session_state.get("company-sort-secondary-select", st.session_state.get("company_sort_secondary_column"))
+        if previous_secondary == sort_column:
+            previous_secondary = None
+        if previous_secondary not in secondary_options:
+            previous_secondary = None
+        st.session_state["company-sort-secondary-select"] = previous_secondary
+        sort_secondary_column = sort_controls[3].selectbox(
+            "Then by", secondary_options, format_func=lambda value: value or "None",
+            key="company-sort-secondary-select",
+        )
+        sort_secondary_descending = sort_controls[4].checkbox(
+            "Descending", value=bool(st.session_state.get("company_sort_secondary_descending", False)),
+            key="company-sort-secondary-desc",
+            disabled=sort_secondary_column is None,
+        )
+        st.session_state["company_sort_column"] = sort_column
+        st.session_state["company_sort_descending"] = sort_descending
+        st.session_state["company_sort_secondary_column"] = sort_secondary_column
+        st.session_state["company_sort_secondary_descending"] = sort_secondary_descending
+
         category_filter = st.session_state.get("saved_search_category", [])
         category_filter = [
             value for value in dict.fromkeys("" if str(value).casefold() == "unknown" else value for value in category_filter)
@@ -787,6 +1006,62 @@ button.addEventListener('click', async () => {{
             st.session_state["saved_search_added_after"] = added_after
             st.session_state["saved_search_added_before"] = added_before
 
+        notes_id = str(st.query_params.get("notes_id") or "")
+        entry_id = str(st.query_params.get("entry_id") or "")
+        entry_kind = str(st.query_params.get("entry_kind") or "")
+        if notes_id or entry_id:
+            detail_id = notes_id or entry_id
+            detail_record = read_json(root / "companies" / f"{safe_stem(detail_id)}.json", {})
+            if isinstance(detail_record, dict) and detail_record:
+                with st.container(border=True):
+                    detail_heading = "Company notes" if notes_id else f"{entry_kind.title()} details"
+                    st.markdown(f"**{html.escape(str(detail_record.get('company_name') or 'Company'))} · {detail_heading}**")
+                    if notes_id:
+                        raw_notes = detail_record.get("notes", [])
+                        if isinstance(raw_notes, list):
+                            notes_text = "\n\n".join(str(note.get("text") or "") if isinstance(note, dict) else str(note) for note in raw_notes).strip()
+                        else:
+                            notes_text = str(raw_notes or "").strip()
+                        st.write(notes_text or "No company notes available.")
+                    else:
+                        contacts = normalize_contacts(detail_record.get("contacts", []))
+                        if entry_kind == "email":
+                            raw_values = detail_record.get("emails", [])
+                            raw_values = raw_values if isinstance(raw_values, list) else [raw_values]
+                            values = list(dict.fromkeys([str(value).strip() for value in raw_values if str(value).strip()] + [value for contact in contacts for value in contact.get("emails", [])]))
+                            for value in values:
+                                st.code(value, language=None)
+                        elif entry_kind == "phone":
+                            raw_values = detail_record.get("phones", [])
+                            raw_values = raw_values if isinstance(raw_values, list) else [raw_values]
+                            values = list(dict.fromkeys([str(value).strip() for value in raw_values if str(value).strip()] + [value for contact in contacts for value in contact.get("phones", [])]))
+                            for value in values:
+                                st.code(value, language=None)
+                        elif entry_kind == "website":
+                            website = str(detail_record.get("website") or "").strip()
+                            if website:
+                                st.code(website, language=None)
+                                safe_website = website if website.startswith(("http://", "https://")) else f"https://{website}"
+                                st.markdown(f"<a href='{html.escape(safe_website, quote=True)}' target='_blank' rel='noopener noreferrer'>Open website ↗</a>", unsafe_allow_html=True)
+                        elif entry_kind == "socials":
+                            for index, social in enumerate(normalize_social_links(detail_record.get("social_links", []))):
+                                social_url = str(social.get("url") or "").strip()
+                                social_name = str(social.get("name") or "Social")
+                                if social_url:
+                                    safe_url = social_url if social_url.startswith(("http://", "https://")) else f"https://{social_url}"
+                                    safe_url_js = json.dumps(safe_url, ensure_ascii=False).replace("<", "\\u003c")
+                                    safe_url_html = html.escape(safe_url, quote=True)
+                                    st.components.v1.html(f"""
+<style>html,body{{margin:0;padding:0;font:14px sans-serif;overflow:hidden}}.entry{{display:flex;align-items:center;gap:.6rem;min-height:2.4rem}}.entry a{{color:#1b7780;overflow-wrap:anywhere;flex:1}}.entry button{{border:1px solid #aab2bd;border-radius:.4rem;background:#f0f2f6;color:#1f2937;padding:.35rem .65rem;cursor:pointer;white-space:nowrap}}</style>
+<div class="entry"><a href="{safe_url_html}" target="_blank" rel="noopener noreferrer">{safe_url_html}</a><button id="copy-link-{index}">Copy</button><span id="copy-state-{index}"></span></div>
+<script>document.getElementById('copy-link-{index}').addEventListener('click',async()=>{{try{{await window.parent.navigator.clipboard.writeText({safe_url_js});document.getElementById('copy-state-{index}').textContent='Copied';}}catch(error){{document.getElementById('copy-state-{index}').textContent='Copy failed';}}}});</script>
+""", height=46, scrolling=False)
+                                else:
+                                    st.code(social_name, language=None)
+                    if st.button("Close", key=f"close-list-detail-{detail_id}-{entry_kind}"):
+                        st.query_params.clear()
+                        st.rerun()
+
         visible: list[dict[str, Any]] = []
         query = search.casefold().strip()
         for company in companies:
@@ -794,18 +1069,38 @@ button.addEventListener('click', async () => {{
                 continue
             haystack = " ".join([
                 str(company.get("company_name", "")), str(company.get("organization_category", "")),
-                str(company.get("subcategory", "")), _display(company.get("contacts", [])),
-                _display(company.get("emails", [])), _display(company.get("phones", [])),
+                str(company.get("subcategory", "")),
             ]).casefold()
+            if query and query not in haystack:
+                full_record = read_json(root / "companies" / f"{safe_stem(str(company.get('company_id', '')))}.json", {})
+                full_record = full_record if isinstance(full_record, dict) else {}
+                haystack = " ".join([
+                    haystack, _display(full_record.get("contacts", [])),
+                    _display(full_record.get("emails", [])), _display(full_record.get("phones", [])),
+                ]).casefold()
             added = _date_value(str(company.get("first_seen", "")))
             category = str(company.get("organization_category") or "")
             if category.casefold() == "unknown":
                 category = ""
             locations = company.get("locations", [])
             locations = locations if isinstance(locations, list) else [locations]
+            company_subcategory = str(company.get("subcategory") or "")
+            company_status = str(crm_by_id.get(str(company.get("company_id", "")), {}).get("status") or "New")
+            has_phones = int(company.get("phone_count", 0)) > 0
+            has_website = bool(company.get("has_website", False))
+            has_socials = int(company.get("social_count", 0)) > 0
             if query and query not in haystack:
                 continue
             if category_filter and category not in category_filter:
+                continue
+            if company_status not in column_filters["Status"]:
+                continue
+            if category not in column_filters["Category"]:
+                continue
+            if company_subcategory not in column_filters["Subcategory"]:
+                continue
+            presence = {"Website": has_website, "Phone": has_phones, "Socials": has_socials}
+            if any(("Has entries" if has_entries else "No entries") not in column_filters[label] for label, has_entries in presence.items()):
                 continue
             if location_filter and not set(location_filter).intersection(str(location) for location in locations):
                 continue
@@ -814,63 +1109,146 @@ button.addEventListener('click', async () => {{
             if added_before and (added is None or added > added_before):
                 continue
             visible.append(company)
+
         sort_column = st.session_state.get("company_sort_column", "Company")
         sort_descending = bool(st.session_state.get("company_sort_descending", False))
-        def _company_sort_value(record: dict[str, Any]) -> Any:
+        sort_secondary_column = st.session_state.get("company_sort_secondary_column")
+        sort_secondary_descending = bool(st.session_state.get("company_sort_secondary_descending", False))
+
+        def _company_sort_value(record: dict[str, Any], column: str) -> Any:
             company_id = str(record.get("company_id", ""))
-            if sort_column == "Status":
-                return str(_crm(company_id).get("status") or "New").casefold()
-            if sort_column == "Category":
+            crm = crm_by_id.get(company_id, {})
+            if column == "Status":
+                return str(crm.get("status") or "New").casefold()
+            if column == "Category":
                 category_value = str(record.get("organization_category") or "")
                 if category_value.casefold() == "unknown":
                     category_value = ""
-                return f"{category_value} {record.get('subcategory') or ''}".casefold()
-            if sort_column == "Notes":
-                return len(_followup_notes(_crm(company_id).get("notes", [])))
-            if sort_column == "Next follow-up":
-                return _date_value(str(_crm(company_id).get("next_followup", ""))) or date.min
-            if sort_column == "Updated":
+                return category_value.casefold()
+            if column == "Subcategory":
+                return str(record.get("subcategory") or "").casefold()
+            if column in ("Email", "Phone"):
+                return int(record.get("email_count" if column == "Email" else "phone_count", 0))
+            if column == "Website":
+                return bool(record.get("has_website", False))
+            if column == "Socials":
+                return int(record.get("social_count", 0))
+            if column == "Created":
+                return _date_value(str(record.get("first_seen", ""))) or date.min
+            if column == "Notes":
+                return int(crm.get("note_count", 0))
+            if column == "Next follow-up":
+                return _date_value(str(crm.get("next_followup", ""))) or date.min
+            if column == "Updated":
                 return _date_value(str(record.get("last_seen", ""))) or date.min
             return str(record.get("company_name", "")).casefold()
 
-        visible.sort(key=_company_sort_value, reverse=sort_descending)
-        st.caption(f"{len(visible)} companies")
-        if visible:
-            st.markdown("<style>div[class*='st-key-company-list-header']{background:rgba(27,119,128,.12);border-bottom:2px solid #1b7780;border-radius:.45rem;padding:.15rem .35rem;margin-bottom:.25rem}div[class*='st-key-sort-companies-'] button{background:transparent;border:0;color:var(--text-color);font-weight:700;justify-content:center;padding:.2rem 0;text-align:center;min-height:1.6rem}div[class*='st-key-sort-companies-'] button:hover{background:transparent;text-decoration:underline;color:var(--text-color)}div[class*='st-key-company-open-'] button{background:transparent;border:0;color:var(--primary-color);justify-content:center;text-align:center}div[class*='st-key-company-open-'] button:hover{text-decoration:underline;color:var(--primary-color)}div[class*='st-key-company-list-row-'] div[data-testid='stMarkdown'] div.company-cell{text-align:center} @media(max-width:760px){div[class*='st-key-company-list-header']{display:none}div[class*='st-key-company-open-'] button{justify-content:flex-start;text-align:left;padding-left:0}div[class*='st-key-company-list-row-'] div[data-testid='stMarkdown'] div.company-cell{text-align:left}}</style>", unsafe_allow_html=True)
-            column_widths = [2.7, 1.6, 2.2, 0.8, 1.6, 1.4]
+        if sort_secondary_column:
+            visible.sort(key=lambda record: _company_sort_value(record, sort_secondary_column), reverse=sort_secondary_descending)
+        visible.sort(key=lambda record: _company_sort_value(record, sort_column), reverse=sort_descending)
+
+        # Pagination controls
+        PAGE_SIZE = 30
+        total_companies = len(visible)
+        total_pages = max(1, math.ceil(total_companies / PAGE_SIZE))
+        current_page = st.session_state.get("company_list_page", 1)
+        if current_page > total_pages:
+            current_page = total_pages
+        if current_page < 1:
+            current_page = 1
+        st.session_state["company_list_page"] = current_page
+
+        count_col, page_col = st.columns([2, 1], vertical_alignment="center")
+        with count_col:
+            st.caption(f"{total_companies} companies" + (f" · Page {current_page} of {total_pages}" if total_pages > 1 else ""))
+        with page_col:
+            if total_pages > 1:
+                prev_col, label_col, next_col = st.columns([1, 2, 1])
+                with prev_col:
+                    if st.button("◀ Prev", key="prev-page", disabled=current_page <= 1, use_container_width=True):
+                        st.session_state["company_list_page"] = current_page - 1
+                        st.rerun()
+                with label_col:
+                    st.markdown(f"<div style='text-align:center;line-height:2.2rem;font-size:0.9rem;font-weight:600'>{current_page} / {total_pages}</div>", unsafe_allow_html=True)
+                with next_col:
+                    if st.button("Next ▶", key="next-page", disabled=current_page >= total_pages, use_container_width=True):
+                        st.session_state["company_list_page"] = current_page + 1
+                        st.rerun()
+
+        start_idx = (current_page - 1) * PAGE_SIZE
+        page_items = visible[start_idx : start_idx + PAGE_SIZE]
+
+        if not selected_columns:
+            st.info("Select at least one column to display the company list.")
+        elif page_items:
+            # Browsable list rendering based on selected columns
+            col_widths_map = {
+                "Company": 2.7, "Status": 1.5, "Category": 1.9, "Subcategory": 1.7,
+                "Email": 0.9, "Website": 0.9, "Phone": 0.9, "Socials": 0.9,
+                "Created": 1.3, "Notes": 0.8, "Next follow-up": 1.4, "Updated": 1.3,
+            }
+            cols_to_show = [c for c in list_columns if c in selected_columns]
+            column_widths = [col_widths_map.get(col, 1.0) for col in cols_to_show]
+
+            st.markdown("<style>div[class*='st-key-company-list-header']{background:rgba(27,119,128,.12);border-bottom:2px solid #1b7780;border-radius:.45rem;padding:.2rem .35rem;margin-bottom:.25rem}div[class*='st-key-company-list-header'] div[data-testid='stMarkdown']{font-weight:700;color:var(--text-color);text-align:center;font-size:.88rem}div[class*='st-key-company-list-header'] div[data-testid='column']:first-child div[data-testid='stMarkdown']{text-align:left;padding-left:.25rem}div[class*='st-key-company-open-'] button{background:transparent;border:0;color:var(--primary-color);justify-content:flex-start;text-align:left;font-weight:600;padding-left:0}div[class*='st-key-company-open-'] button:hover{text-decoration:underline;color:var(--primary-color)}div[class*='st-key-company-list-row-']{border-bottom:1px solid rgba(128,128,128,.18);padding:.35rem .15rem}div[class*='st-key-company-list-row-']:hover{background:rgba(27,119,128,.04)}div[class*='st-key-company-list-row-'] div[data-testid='stMarkdown'] div.company-cell{text-align:center;font-size:.88rem}div[class*='st-key-company-list-row-'] div[data-testid='column']:first-child div[data-testid='stMarkdown'] div.company-cell{text-align:left}@media(max-width:760px){div[class*='st-key-company-list-header']{display:none}div[class*='st-key-company-list-row-'] div[data-testid='stMarkdown'] div.company-cell{text-align:left}}</style>", unsafe_allow_html=True)
+
             with st.container(key="company-list-header"):
                 header = st.columns(column_widths)
-                for column, label in zip(header, ("Company", "Status", "Category", "Notes", "Next follow-up", "Updated")):
-                    marker = (" ↓" if sort_descending else " ↑") if sort_column == label else ""
-                    column.button(
-                        f"{label}{marker}", key=f"sort-companies-{label}", use_container_width=True,
-                        on_click=_sort_companies_by, args=(label,),
-                    )
-            for company in visible:
+                for column, label in zip(header, cols_to_show):
+                    column.markdown(f"**{label}**")
+
+            for company in page_items:
                 company_id = str(company.get("company_id", ""))
-                crm = _crm(company_id)
-                note_count = len(_followup_notes(crm.get("notes", [])))
-                next_followup = _short_date(crm.get("next_followup")) or "—"
+                crm = crm_by_id.get(company_id, {})
                 category_value = str(company.get("organization_category") or "")
                 if category_value.casefold() == "unknown":
                     category_value = ""
                 category_label = category_value.replace("_", " ").title() if category_value else "—"
-                subcategory_label = str(company.get("subcategory") or "").strip().replace("_", " ")
-                category_display = f"{category_label} · {subcategory_label}" if subcategory_label else category_label
+                subcategory_label = str(company.get("subcategory") or "").strip().replace("_", " ") or "—"
+
+                values = {
+                    "Company": str(company.get("company_name") or "Unnamed company"),
+                    "Status": str(crm.get("status") or "New"),
+                    "Category": category_label,
+                    "Subcategory": subcategory_label,
+                    "Email": str(company.get("email_count", 0)) if company.get("email_count") else "—",
+                    "Website": "Yes" if company.get("has_website") else "—",
+                    "Phone": str(company.get("phone_count", 0)) if company.get("phone_count") else "—",
+                    "Socials": str(company.get("social_count", 0)) if company.get("social_count") else "—",
+                    "Created": _short_date(company.get("first_seen")) or "—",
+                    "Notes": str(crm.get("note_count", 0)),
+                    "Next follow-up": _short_date(crm.get("next_followup")) or "—",
+                    "Updated": _short_date(company.get("last_seen")) or "—",
+                }
+
                 with st.container(key=f"company-list-row-{safe_stem(company_id)}"):
                     row = st.columns(column_widths)
-                    with row[0]:
-                        if company.get("archived", False):
-                            st.caption("Archived")
-                        st.button(
-                            str(company.get("company_name") or "Unnamed company"),
-                            key=f"company-open-{safe_stem(company_id)}", use_container_width=True,
-                            on_click=_open_company, args=(company_id,),
-                        )
-                    row[1].markdown(f"<div class='company-cell'><span class='mobile-field-label'>Status</span>{html.escape(str(crm.get('status') or 'New'))}</div>", unsafe_allow_html=True)
-                    row[2].markdown(f"<div class='company-cell'><span class='mobile-field-label'>Category</span>{html.escape(category_display)}</div>", unsafe_allow_html=True)
-                    row[3].markdown(f"<div class='company-cell'><span class='mobile-field-label'>Notes</span>{note_count}</div>", unsafe_allow_html=True)
-                    row[4].markdown(f"<div class='company-cell'><span class='mobile-field-label'>Next follow-up</span>{html.escape(next_followup)}</div>", unsafe_allow_html=True)
-                    row[5].markdown(f"<div class='company-cell'><span class='mobile-field-label'>Updated</span>{html.escape(_short_date(company.get('last_seen')) or '—')}</div>", unsafe_allow_html=True)
+                    for col, label in zip(row, cols_to_show):
+                        if label == "Company":
+                            with col:
+                                if company.get("archived", False):
+                                    st.caption("Archived")
+                                notes_href = f"?notes_id={quote(company_id, safe='')}"
+                                name_btn_col, info_btn_col = st.columns([10, 2], vertical_alignment="center")
+                                with name_btn_col:
+                                    st.button(
+                                        values["Company"],
+                                        key=f"company-open-{safe_stem(company_id)}",
+                                        use_container_width=True,
+                                        on_click=_open_company,
+                                        args=(company_id,),
+                                    )
+                                with info_btn_col:
+                                    st.markdown(f"<a href='{notes_href}' title='View notes' style='color:#7b8490;text-decoration:none;font-size:1.05rem'>ⓘ</a>", unsafe_allow_html=True)
+                        elif label in ("Email", "Website", "Phone", "Socials") and values[label] != "—":
+                            entry_kind = label.casefold()
+                            entry_href = f"?entry_id={quote(company_id, safe='')}&amp;entry_kind={entry_kind}"
+                            col.markdown(f"<div class='company-cell'><span class='mobile-field-label'>{label}</span><a href='{entry_href}' style='color:var(--primary-color);font-weight:600;text-decoration:none'>{html.escape(values[label])}</a></div>", unsafe_allow_html=True)
+                        else:
+                            col.markdown(f"<div class='company-cell'><span class='mobile-field-label'>{label}</span>{html.escape(values[label])}</div>", unsafe_allow_html=True)
         else:
-            st.info("No companies yet. Add a source or use the rebuild button after saving extractions.")
+            if companies:
+                st.info("No companies match the current search and filters.")
+            else:
+                st.info("No companies yet. Add a source or use the rebuild button after saving extractions.")
+

@@ -32,4 +32,4 @@ echo "Checking and installing app packages..."
 ".venv/bin/python" -m pip install --disable-pip-version-check -r requirements.txt
 
 echo "Starting Lead Extractor. Keep this terminal open while using the app."
-exec ".venv/bin/python" -m streamlit run app.py "$@"
+exec ".venv/bin/python" -m streamlit run app.py --server.address 0.0.0.0 "$@"

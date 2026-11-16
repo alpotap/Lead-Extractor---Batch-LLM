@@ -5,7 +5,7 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 
-def capture_rendered_html(url: str, *, settle_seconds: int = 10) -> str:
+def capture_rendered_html(url: str, *, settle_seconds: int = 10, timeout_seconds: int = 60) -> str:
     """Return browser-rendered HTML after DOM content load and a settling delay."""
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -32,7 +32,7 @@ def capture_rendered_html(url: str, *, settle_seconds: int = 10) -> str:
 
         try:
             page = browser.new_page()
-            page.goto(url.strip(), wait_until="load", timeout=60_000)
+            page.goto(url.strip(), wait_until="load", timeout=max(1, timeout_seconds) * 1000)
             page.wait_for_timeout(max(0, settle_seconds) * 1000)
             return page.content()
         finally:

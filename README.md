@@ -32,7 +32,7 @@ Requirement: have an Ollama (local and Cloud are supported)
 4. Keep the launcher window open while using the app.
    If no python is found - it will install it automatically.
 5. Your default browser will open the app automatically.
-   Default: http://localhost:8501
+   On the host computer, open http://localhost:8501. To connect from another device on the same network, use the LAN address shown in the app sidebar under **Network access**.
 6. Use the App!
 
 Note: If Ollama is unavailable, you can still browse and edit existing company records, but the app cannot extract new leads until Ollama is running.

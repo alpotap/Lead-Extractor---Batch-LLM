@@ -11,9 +11,12 @@ import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 import urllib.request
-from typing import Any
+
+DEFAULT_NUM_PREDICT = 4096
+MAX_NUM_PREDICT = 32768
 
 from models.lead import (
     EXTRACTION_SCHEMA,
@@ -23,6 +26,9 @@ from models.lead import (
     normalize_opening_hours,
     normalize_social_links,
 )
+
+SOURCE_CHUNK_CHARS = 5500
+SOURCE_CHUNK_OVERLAP_CHARS = 800
 
 _RAW_LOGGERS: dict[str, logging.Logger] = {}
 _RAW_LOGGERS_LOCK = threading.Lock()
@@ -117,41 +123,61 @@ def _generate_json(
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0, "num_predict": 1024},
+        # Full extraction can contain many contacts and source details. If the
+        # response is truncated, retry this request with a doubled output cap.
+        "options": {
+            "temperature": 0,
+            "num_predict": DEFAULT_NUM_PREDICT,
+            # Ollama's default context is commonly 4096. Leave room for both
+            # this prompt and the full output budget, growing it on retries.
+            "num_ctx": max(8192, DEFAULT_NUM_PREDICT + 4096),
+        },
     }
-    request_time = datetime.now().astimezone().isoformat(timespec="seconds")
-    try:
-        result = _request(base_url.rstrip("/") + "/api/generate", request_payload, timeout=300, api_key=api_key)
-    except Exception as exc:
-        error_body = ""
-        if hasattr(exc, "read"):
-            try:
-                error_body = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                error_body = ""
+    while True:
+        request_time = datetime.now().astimezone().isoformat(timespec="seconds")
+        try:
+            result = _request(base_url.rstrip("/") + "/api/generate", request_payload, timeout=300, api_key=api_key)
+        except Exception as exc:
+            error_body = ""
+            if hasattr(exc, "read"):
+                try:
+                    error_body = exc.read().decode("utf-8", errors="replace")
+                except Exception:
+                    error_body = ""
+            _raw_log_event(raw_log_path, {
+                "timestamp": request_time, "event": "ollama_error", "task": task,
+                "source_file": source_file, "model": model, "segment": segment,
+                "segment_count": segment_count, "prompt": prompt,
+                "request": {key: value for key, value in request_payload.items() if key != "prompt"},
+                "error": f"{type(exc).__name__}: {exc}", "error_body": error_body,
+            }, raw_log_max_bytes, raw_log_backups)
+            raise
         _raw_log_event(raw_log_path, {
-            "timestamp": request_time, "event": "ollama_error", "task": task,
+            "timestamp": request_time, "event": "ollama_response", "task": task,
             "source_file": source_file, "model": model, "segment": segment,
             "segment_count": segment_count, "prompt": prompt,
             "request": {key: value for key, value in request_payload.items() if key != "prompt"},
-            "error": f"{type(exc).__name__}: {exc}", "error_body": error_body,
+            "response_text": result.get("response", ""),
+            "response_metadata": {key: value for key, value in result.items() if key != "response"},
         }, raw_log_max_bytes, raw_log_backups)
-        raise
-    _raw_log_event(raw_log_path, {
-        "timestamp": request_time, "event": "ollama_response", "task": task,
-        "source_file": source_file, "model": model, "segment": segment,
-        "segment_count": segment_count, "prompt": prompt,
-        "request": {key: value for key, value in request_payload.items() if key != "prompt"},
-        "response_text": result.get("response", ""),
-        "response_metadata": {key: value for key, value in result.items() if key != "response"},
-    }, raw_log_max_bytes, raw_log_backups)
-    response = str(result.get("response", "")).strip()
-    done_reason = str(result.get("done_reason") or "").strip().lower()
-    if done_reason == "length":
-        raise ValueError(
-            f"Ollama truncated {task} segment {segment}/{segment_count} at its output limit; "
-            "the response was rejected before any extraction could be saved"
+        done_reason = str(result.get("done_reason") or "").strip().lower()
+        if done_reason != "length":
+            break
+        current_limit = int(request_payload["options"]["num_predict"])
+        if current_limit >= MAX_NUM_PREDICT:
+            raise ValueError(
+                f"Ollama truncated {task} segment {segment}/{segment_count} at the maximum "
+                f"output limit ({current_limit} tokens); the response was rejected before any extraction could be saved"
+            )
+        next_limit = min(current_limit * 2, MAX_NUM_PREDICT)
+        request_payload["options"]["num_predict"] = next_limit
+        request_payload["options"]["num_ctx"] = max(8192, next_limit + 4096)
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Ollama truncated %s segment %d/%d at %d output tokens; retrying with %d",
+            task, segment, segment_count, current_limit, next_limit,
         )
+    response = str(result.get("response", "")).strip()
     if not response:
         raise ValueError(
             f"Ollama returned an empty response for {task} segment {segment}/{segment_count} "
@@ -208,9 +234,30 @@ def extract_lead(
     api_key: str = "",
 ) -> dict[str, Any]:
     schema = json.dumps(EXTRACTION_SCHEMA, ensure_ascii=False, indent=2)
-    # Keep prompts under the small default context window used by many local
-    # models. Long saved pages are handled in order and their fields combined.
-    chunks = [source_text[i : i + 5500] for i in range(0, len(source_text), 5500)] or [""]
+    # Keep prompts bounded, but carry nearby text across boundaries so a name,
+    # heading, or contact detail is less likely to be isolated in one segment.
+    chunks: list[str] = []
+    start = 0
+    while start < len(source_text):
+        end = min(start + SOURCE_CHUNK_CHARS, len(source_text))
+        if end < len(source_text):
+            # Prefer a line boundary in the latter half of the window when one
+            # is available; fall back to the hard limit for long single lines.
+            line_break = source_text.rfind("\n", start + SOURCE_CHUNK_CHARS // 2, end)
+            if line_break > start:
+                end = line_break
+        chunks.append(source_text[start:end].strip())
+        if end >= len(source_text):
+            break
+        next_start = max(start + 1, end - SOURCE_CHUNK_OVERLAP_CHARS)
+        # If possible, move forward to a nearby line boundary while keeping a
+        # useful portion of the previous segment in the next prompt.
+        line_break = source_text.find("\n", next_start, min(end, next_start + 300))
+        if line_break >= 0:
+            next_start = line_break + 1
+        start = next_start
+    if not chunks:
+        chunks = [""]
     combined = {
         key: ([] if isinstance(value, list) else value)
         for key, value in EXTRACTION_TEMPLATE.items()
@@ -232,7 +279,7 @@ Include only information present in the source. Keep notes to at most three shor
 CONTACTS: Find every named person associated with the organization, including people in team, staff, editorial, leadership, and contact sections. Make one contacts entry per person even when the page gives only a name. Attach that person's title/role, email, and phone to the same entry when the page makes the association clear. Never merge different people or invent names.
 SOCIAL LINKS: For each social account, pair its platform name (such as Facebook or Instagram) with the actual profile URL found in the source. Do not put a platform name in the URL field. If only the platform is shown, keep the name and leave url empty.
 OPENING HOURS: Copy any published hours into one opening_hours row per day or day range. Preserve closed days and exact times. Leave the array empty when no hours are stated.
-This is source segment {chunk_number} of {len(chunks)}. Extract facts present in this segment only.
+This is source segment {chunk_number} of {len(chunks)}. Adjacent segments may repeat a little context around their boundary. Extract facts present in this segment.
 
 SOURCE TEXT:
 {chunk}

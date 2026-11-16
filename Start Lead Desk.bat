@@ -104,7 +104,7 @@ if defined OLLAMA_EXE (
 )
 
 echo Starting Lead Extractor. Keep this window open while using the app.
-".venv\Scripts\python.exe" -m streamlit run app.py
+".venv\Scripts\python.exe" -m streamlit run app.py --server.address 0.0.0.0
 if errorlevel 1 goto :failed
 exit /b 0
 

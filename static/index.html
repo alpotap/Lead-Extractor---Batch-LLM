@@ -1,0 +1,1939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lead Extractor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50: '#f0f9fa', 100: '#dbf0f2', 200: '#bbe1e6', 500: '#1B7780', 600: '#156168', 700: '#114f55' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .badge { display: inline-flex; align-items: center; padding: 0.15rem 0.55rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+    <div class="w-full px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        
+        <!-- Logo & Title -->
+        <div class="flex items-center gap-3">
+          <svg class="h-8 w-auto text-brand-500" viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 6h22v28H6z"/>
+            <path d="M11 12h12M11 17h8M11 22l3 3-3 3M19 28h5"/>
+            <circle cx="28" cy="28" r="6" fill="#fff"/>
+            <path d="m32 32 5 5"/>
+          </svg>
+          <span class="text-xl font-bold tracking-tight text-slate-900">Lead Extractor</span>
+          <span class="text-xs bg-slate-100 text-slate-500 font-medium px-2 py-0.5 rounded border border-slate-200">v0.3.0</span>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <nav class="hidden md:flex items-center gap-1">
+          <button onclick="switchTab('companies')" id="nav-companies" class="nav-tab px-3 py-2 rounded-lg text-sm font-semibold transition text-brand-600 bg-brand-50">
+            🏢 Companies <span id="badge-companies-count" class="ml-1 text-xs px-1.5 py-0.2 bg-brand-100 text-brand-700 rounded-full font-bold">0</span>
+          </button>
+          <button onclick="switchTab('add-source')" id="nav-add-source" class="nav-tab px-3 py-2 rounded-lg text-sm font-medium transition text-slate-600 hover:text-slate-900 hover:bg-slate-100">
+            ➕ Add a Source
+          </button>
+          <button onclick="switchTab('manual-lead')" id="nav-manual-lead" class="nav-tab px-3 py-2 rounded-lg text-sm font-medium transition text-slate-600 hover:text-slate-900 hover:bg-slate-100">
+            ✍️ Create Lead Manually
+          </button>
+          <button onclick="switchTab('categories')" id="nav-categories" class="nav-tab px-3 py-2 rounded-lg text-sm font-medium transition text-slate-600 hover:text-slate-900 hover:bg-slate-100">
+            🏷️ Categories
+          </button>
+          <button onclick="switchTab('review')" id="nav-review" class="nav-tab px-3 py-2 rounded-lg text-sm font-medium transition text-slate-600 hover:text-slate-900 hover:bg-slate-100 flex items-center gap-1.5">
+            ⚠️ Review Queue <span id="badge-review-count" class="hidden text-xs px-1.5 py-0.2 bg-amber-100 text-amber-700 rounded-full font-bold">0</span>
+          </button>
+        </nav>
+
+        <!-- Right Status & Settings -->
+        <div class="flex items-center gap-2.5">
+          <!-- Network Access Quick Pill -->
+          <button id="header-lan-btn" onclick="copyLanUrl()" class="hidden sm:flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border bg-slate-50 text-slate-700 hover:bg-slate-100 border-slate-200 transition shadow-2xs" title="Click to copy local network address">
+            <span>🌐</span>
+            <span id="header-lan-text">LAN: http://...</span>
+          </button>
+
+          <!-- Ollama Status Pill -->
+          <div id="ollama-pill" class="hidden sm:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border bg-slate-100 text-slate-600 border-slate-200">
+            <span class="w-2 h-2 rounded-full bg-slate-400" id="ollama-dot"></span>
+            <span id="ollama-text">Checking Ollama…</span>
+          </div>
+
+          <!-- Settings Button -->
+          <button onclick="openSettingsModal()" class="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition" title="Settings">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3" stroke-width="2"/></svg>
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Area (Full Browser Width) -->
+  <main class="w-full px-4 sm:px-6 lg:px-8 py-6 flex-1">
+
+    <!-- ========================================== -->
+    <!-- TAB 1: COMPANIES LIST & DETAIL VIEW       -->
+    <!-- ========================================== -->
+    <div id="tab-companies" class="tab-content">
+      
+      <!-- List View -->
+      <div id="companies-list-view">
+        <!-- Search and Filters Bar -->
+        <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-6 flex flex-col gap-4">
+          <div class="flex flex-col sm:flex-row gap-3 items-center">
+            <div class="relative flex-1 w-full">
+              <svg class="w-5 h-5 absolute left-3.5 top-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+              <input type="text" id="company-search" oninput="debounceSearch()" placeholder="Search company name, contact, email, phone, location…" class="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:outline-none text-sm">
+            </div>
+            
+            <!-- Columns Popover Button -->
+            <div class="relative">
+              <button onclick="toggleColumnsPopover()" id="columns-btn" class="text-xs font-semibold px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition flex items-center gap-1.5 whitespace-nowrap text-slate-700 bg-white">
+                <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/></svg>
+                Columns
+              </button>
+              <div id="columns-popover" class="hidden absolute right-0 mt-2 w-52 bg-white rounded-xl shadow-xl border border-slate-200 p-3 z-40 text-xs space-y-1.5 animate-in fade-in zoom-in-95 duration-100">
+                <div class="font-bold text-slate-800 pb-1 border-b text-[11px] uppercase tracking-wider">Visible Columns</div>
+                <div id="column-checkboxes" class="space-y-1 max-h-60 overflow-y-auto custom-scrollbar"></div>
+              </div>
+            </div>
+
+            <button onclick="toggleAdvancedFilters()" id="filters-btn" class="text-xs font-semibold px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition flex items-center gap-1.5 whitespace-nowrap text-slate-600 bg-white">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/></svg>
+              Filter Options
+            </button>
+            <button onclick="loadCompanies()" class="p-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition text-slate-600 bg-white" title="Refresh">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            </button>
+          </div>
+
+          <!-- Collapsible Filters -->
+          <div id="advanced-filters" class="hidden space-y-4 pt-3 border-t border-slate-100">
+            <div class="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <div>
+                <label class="block text-xs font-semibold text-slate-500 mb-1">Status</label>
+                <select id="filter-status" onchange="loadCompanies(1)" class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                  <option value="">All Statuses</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-500 mb-1">Category</label>
+                <select id="filter-category" onchange="loadCompanies(1)" class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                  <option value="">All Categories</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-500 mb-1">Subcategory</label>
+                <select id="filter-subcategory" onchange="loadCompanies(1)" class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                  <option value="">All Subcategories</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-500 mb-1">Website</label>
+                <select id="filter-website" onchange="loadCompanies(1)" class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                  <option value="">Any</option>
+                  <option value="has">Has website</option>
+                  <option value="none">No website</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-500 mb-1">Phone</label>
+                <select id="filter-phone" onchange="loadCompanies(1)" class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                  <option value="">Any</option>
+                  <option value="has">Has phone</option>
+                  <option value="none">No phone</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-500 mb-1">Socials</label>
+                <select id="filter-socials" onchange="loadCompanies(1)" class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                  <option value="">Any</option>
+                  <option value="has">Has socials</option>
+                  <option value="none">No socials</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-100">
+              <div>
+                <label class="block text-xs font-semibold text-slate-500 mb-1">Primary Sort</label>
+                <div class="flex gap-1.5">
+                  <select id="sort-by" onchange="loadCompanies(1)" class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                    <option value="Company">Company Name</option>
+                    <option value="Updated">Recently Updated</option>
+                    <option value="Created">First Added</option>
+                    <option value="Category">Category</option>
+                    <option value="Subcategory">Subcategory</option>
+                    <option value="Status">CRM Status</option>
+                    <option value="Follow-up">Next Follow-up</option>
+                    <option value="Notes">Notes Count</option>
+                    <option value="Email">Email Count</option>
+                    <option value="Phone">Phone Count</option>
+                  </select>
+                  <button id="sort-desc-btn" onclick="toggleSortDirection()" class="px-2.5 py-1.5 border border-slate-300 rounded-lg hover:bg-slate-50 font-bold text-xs" title="Sort direction">↓</button>
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-xs font-semibold text-slate-500 mb-1">Then By (Secondary)</label>
+                <div class="flex gap-1.5">
+                  <select id="secondary-sort-by" onchange="loadCompanies(1)" class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                    <option value="">None</option>
+                    <option value="Company">Company Name</option>
+                    <option value="Updated">Recently Updated</option>
+                    <option value="Created">First Added</option>
+                    <option value="Category">Category</option>
+                    <option value="Subcategory">Subcategory</option>
+                    <option value="Status">CRM Status</option>
+                    <option value="Follow-up">Next Follow-up</option>
+                    <option value="Notes">Notes Count</option>
+                    <option value="Email">Email Count</option>
+                    <option value="Phone">Phone Count</option>
+                  </select>
+                  <button id="secondary-sort-desc-btn" onclick="toggleSecondarySortDirection()" class="px-2.5 py-1.5 border border-slate-300 rounded-lg hover:bg-slate-50 font-bold text-xs" title="Secondary sort direction">↓</button>
+                </div>
+              </div>
+
+              <div class="flex items-center pt-4">
+                <label class="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-700">
+                  <input type="checkbox" id="filter-archived" onchange="loadCompanies(1)" class="rounded text-brand-500 focus:ring-brand-500 w-4 h-4">
+                  Show archived leads
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Header count & pagination stats -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 text-xs font-medium text-slate-500">
+          <span id="companies-count-label">Loading companies…</span>
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-1.5">
+              <label for="page-size-select" class="text-xs text-slate-500 font-semibold">Per page:</label>
+              <select id="page-size-select" onchange="onPageSizeChange(this.value)" class="text-xs border border-slate-300 rounded-lg py-1 px-2 focus:ring-brand-500 bg-white">
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="0">All (No pagination)</option>
+              </select>
+            </div>
+            <div id="pagination-controls" class="flex items-center gap-2"></div>
+          </div>
+        </div>
+
+        <!-- Browsable Web Cards List -->
+        <div id="companies-cards-container" class="flex flex-col gap-3"></div>
+
+        <!-- Bottom Pagination -->
+        <div id="bottom-pagination-controls" class="flex items-center justify-center gap-2 mt-8"></div>
+      </div>
+
+      <!-- Detail View (Initially Hidden) -->
+      <div id="company-detail-view" class="hidden">
+        <!-- Top bar with Back button -->
+        <div class="flex items-center justify-between mb-6 pb-4 border-b border-slate-200">
+          <div class="flex items-center gap-4">
+            <button onclick="closeCompanyDetail()" class="flex items-center gap-1.5 text-sm font-semibold text-brand-600 hover:text-brand-700 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg transition">
+              ← Back to Companies
+            </button>
+            <h2 id="detail-company-title" class="text-2xl font-bold text-slate-900">Company Name</h2>
+            <span id="detail-archived-badge" class="hidden badge bg-slate-200 text-slate-700">Archived</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="copyCompanyJson()" class="px-3 py-1.5 border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition flex items-center gap-1.5">
+              📋 Copy as JSON
+            </button>
+            <button id="detail-archive-btn" onclick="toggleArchiveCurrent()" class="px-3 py-1.5 border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition">
+              Archive
+            </button>
+          </div>
+        </div>
+
+        <!-- Main Details Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          <!-- Left 2 Columns: Company Fields -->
+          <div class="lg:col-span-2 space-y-6">
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+              <h3 class="text-base font-bold text-slate-900 border-b pb-2">Company Information</h3>
+              
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Company Name</label>
+                  <input type="text" id="detail-company-name" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Website</label>
+                  <div class="flex gap-2">
+                    <input type="text" id="detail-website" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                    <a id="detail-website-link" href="#" target="_blank" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-semibold flex items-center" title="Open website">↗</a>
+                  </div>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Category</label>
+                  <select id="detail-category" onchange="onDetailCategoryChange()" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></select>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Subcategory</label>
+                  <select id="detail-subcategory" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></select>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Emails (one per line)</label>
+                  <textarea id="detail-emails" rows="3" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></textarea>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Phones (one per line)</label>
+                  <textarea id="detail-phones" rows="3" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></textarea>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Addresses (one per line)</label>
+                  <textarea id="detail-addresses" rows="2" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></textarea>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Locations / Cities (one per line)</label>
+                  <textarea id="detail-locations" rows="2" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></textarea>
+                </div>
+              </div>
+
+              <div class="pt-2">
+                <button onclick="saveCompanyDetails()" class="px-5 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition shadow-sm">
+                  Save Company Changes
+                </button>
+              </div>
+            </div>
+
+            <!-- People & Contacts Table -->
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+              <div class="flex items-center justify-between border-b pb-2">
+                <h3 class="text-base font-bold text-slate-900">People & Contacts</h3>
+                <button onclick="addContactRow()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 bg-brand-50 px-2.5 py-1 rounded-md">
+                  + Add Person
+                </button>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                  <thead>
+                    <tr class="text-xs font-semibold text-slate-400 border-b">
+                      <th class="py-2">Name</th>
+                      <th class="py-2">Role / Title</th>
+                      <th class="py-2">Emails</th>
+                      <th class="py-2">Phones</th>
+                      <th class="py-2 w-8"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="detail-contacts-tbody" class="divide-y divide-slate-100"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Attached Sources & Re-extraction -->
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+              <h3 class="text-base font-bold text-slate-900 border-b pb-2">Archived Sources</h3>
+              <div id="detail-sources-list" class="space-y-2"></div>
+            </div>
+
+          </div>
+
+          <!-- Right 1 Column: CRM & Notes Timeline -->
+          <div class="space-y-6">
+            
+            <!-- CRM Controls Card -->
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+              <h3 class="text-base font-bold text-slate-900 border-b pb-2">Follow-up CRM</h3>
+              
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Status</label>
+                  <select id="detail-crm-status" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500 font-semibold"></select>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Rating</label>
+                  <input type="text" id="detail-crm-rating" placeholder="e.g. A+, 5/5" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Last Contacted</label>
+                  <input type="text" id="detail-crm-last-contact" placeholder="DD/MM/YYYY" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-600 mb-1">Next Follow-up</label>
+                  <input type="text" id="detail-crm-next-followup" placeholder="DD/MM/YYYY" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500 font-medium text-amber-700">
+                </div>
+              </div>
+
+              <button onclick="saveCrmDetails()" class="w-full py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-sm font-semibold transition">
+                Update Follow-up
+              </button>
+            </div>
+
+            <!-- Notes Timeline -->
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+              <h3 class="text-base font-bold text-slate-900 border-b pb-2">Follow-up Notes</h3>
+              
+              <div class="space-y-2">
+                <textarea id="new-note-text" rows="2" placeholder="Write a note or meeting record…" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></textarea>
+                <button onclick="addCrmNote()" class="w-full py-1.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-xs font-semibold transition">
+                  + Add Note
+                </button>
+              </div>
+
+              <div id="crm-notes-timeline" class="space-y-3 pt-2 max-h-96 overflow-y-auto custom-scrollbar"></div>
+            </div>
+
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ========================================== -->
+    <!-- TAB 2: ADD A SOURCE                       -->
+    <!-- ========================================== -->
+    <div id="tab-add-source" class="tab-content hidden w-full max-w-5xl mx-auto">
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+        <div>
+          <h2 class="text-xl font-bold text-slate-900">Add Source Material</h2>
+          <p class="text-sm text-slate-500 mt-1">Extract lead data automatically from live URLs or pasted webpage text.</p>
+        </div>
+
+        <div class="flex border-b border-slate-200 gap-4">
+          <button onclick="switchSourceTab('url')" id="source-tab-url" class="pb-2 text-sm font-bold border-b-2 border-brand-500 text-brand-600">
+            Fetch from URL(s)
+          </button>
+          <button onclick="switchSourceTab('text')" id="source-tab-text" class="pb-2 text-sm font-medium text-slate-500 hover:text-slate-800 border-b-2 border-transparent">
+            Paste Text
+          </button>
+        </div>
+
+        <!-- URL Sub-tab -->
+        <div id="source-pane-url" class="space-y-4">
+          <p class="text-xs text-slate-500">Paste one or multiple URLs (separated by new lines or commas). Pages will be rendered in a headless browser with a 10-second settling delay to capture JavaScript content.</p>
+          <textarea id="source-urls-input" rows="5" placeholder="https://example.com/contact&#10;https://example.org/about" class="w-full text-sm border border-slate-300 rounded-lg p-3 font-mono focus:ring-brand-500"></textarea>
+          <button id="fetch-urls-btn" onclick="submitUrls()" class="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition flex items-center gap-2">
+            <span>Fetch Pages and Queue Ingestion</span>
+          </button>
+          <div id="fetch-results" class="hidden space-y-2 pt-4 border-t"></div>
+        </div>
+
+        <!-- Text Sub-tab -->
+        <div id="source-pane-text" class="space-y-4 hidden">
+          <p class="text-xs text-slate-500">Paste text copied from a company website, directory, or email. The background AI extractor will extract contacts and companies.</p>
+          <textarea id="source-text-input" rows="8" placeholder="Paste company information, address, team details, contacts…" class="w-full text-sm border border-slate-300 rounded-lg p-3 focus:ring-brand-500"></textarea>
+          <button id="save-text-btn" onclick="submitText()" class="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition">
+            Save Text Source
+          </button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- TAB 3: CREATE LEAD MANUALLY               -->
+    <!-- ========================================== -->
+    <div id="tab-manual-lead" class="tab-content hidden w-full max-w-5xl mx-auto">
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+        <div>
+          <h2 class="text-xl font-bold text-slate-900">Create Lead Manually</h2>
+          <p class="text-sm text-slate-500 mt-1">Directly add a new company record without needing an extraction or webpage fetch.</p>
+        </div>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Company Name *</label>
+            <input type="text" id="manual-name" placeholder="Acme Corporation" class="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-brand-500">
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Website</label>
+              <input type="text" id="manual-website" placeholder="https://example.com" class="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Category</label>
+              <select id="manual-category" class="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-brand-500"></select>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Emails (one per line)</label>
+              <textarea id="manual-emails" rows="3" placeholder="info@example.com&#10;sales@example.com" class="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-brand-500"></textarea>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Phones (one per line)</label>
+              <textarea id="manual-phones" rows="3" placeholder="+44 20 7946 0958" class="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-brand-500"></textarea>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Addresses (one per line)</label>
+              <textarea id="manual-addresses" rows="2" class="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-brand-500"></textarea>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Locations / Cities (one per line)</label>
+              <textarea id="manual-locations" rows="2" placeholder="London&#10;Manchester" class="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-brand-500"></textarea>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Initial Follow-up Note</label>
+            <textarea id="manual-notes" rows="2" placeholder="Met at networking event; interested in Q3 rollout…" class="w-full text-sm border border-slate-300 rounded-lg p-2.5 focus:ring-brand-500"></textarea>
+          </div>
+
+          <button onclick="submitManualLead()" class="px-6 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition shadow-sm">
+            Create Lead Record
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- TAB 4: CATEGORIES MANAGEMENT              -->
+    <!-- ========================================== -->
+    <div id="tab-categories" class="tab-content hidden w-full max-w-5xl mx-auto space-y-6">
+      <!-- Add Category Card -->
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <h2 class="text-xl font-bold text-slate-900">Manage Category Taxonomy</h2>
+        <p class="text-sm text-slate-500">Categories and subcategories guide the AI extractor when classifying companies.</p>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Create New Main Category</label>
+            <input type="text" id="new-category-name" placeholder="e.g. Medical Supplies" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Or Add to Existing Category</label>
+            <select id="parent-category-select" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+              <option value="">— Select an existing category —</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Subcategories (one per line)</label>
+          <textarea id="new-subcategories-input" rows="3" placeholder="Surgical Equipment&#10;Dental&#10;Pharmaceuticals" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></textarea>
+        </div>
+
+        <button onclick="submitNewCategories()" class="px-5 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition">
+          Save Categories
+        </button>
+      </div>
+
+      <!-- Existing Categories List -->
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <h3 class="text-base font-bold text-slate-900 border-b pb-2">Current Category Hierarchy</h3>
+        <div id="categories-tree-container" class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2"></div>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- TAB 5: REVIEW QUEUE                       -->
+    <!-- ========================================== -->
+    <div id="tab-review" class="tab-content hidden w-full max-w-5xl mx-auto space-y-6">
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <div>
+          <h2 class="text-xl font-bold text-slate-900">Review Queue</h2>
+          <p class="text-sm text-slate-500 mt-1">Extractions that had low confidence or encountered parsing errors.</p>
+        </div>
+
+        <div id="review-items-container" class="space-y-3 pt-2"></div>
+
+        <!-- Dismissed Items Collapsible -->
+        <div class="pt-6 border-t border-slate-100">
+          <details class="text-sm text-slate-600">
+            <summary class="cursor-pointer font-semibold hover:text-slate-900">Dismissed Review Items (<span id="dismissed-count">0</span>)</summary>
+            <div id="dismissed-items-list" class="mt-3 space-y-1.5 pl-4 text-xs font-mono text-slate-500"></div>
+          </details>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ========================================== -->
+  <!-- SETTINGS MODAL                             -->
+  <!-- ========================================== -->
+  <div id="settings-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto">
+    <div class="bg-white rounded-2xl max-w-xl w-full p-6 shadow-xl space-y-5 border border-slate-200 my-8">
+      <div class="flex items-center justify-between border-b pb-3">
+        <h3 class="text-lg font-bold text-slate-900">Application Settings</h3>
+        <button onclick="closeSettingsModal()" class="text-slate-400 hover:text-slate-600 text-xl font-bold">×</button>
+      </div>
+
+      <div class="space-y-4 text-sm">
+        <!-- Lead Data Directory -->
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Lead Data Directory</label>
+          <input type="text" id="settings-data-path" class="w-full border border-slate-300 rounded-lg p-2 font-mono text-xs focus:ring-brand-500">
+          <p class="text-xs text-slate-400 mt-1">Resolved: <span id="settings-resolved-root" class="font-mono"></span></p>
+        </div>
+
+        <!-- Ollama Server URL & Server Detection Badge -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-xs font-semibold text-slate-600">Ollama Server URL</label>
+            <span id="settings-server-type-badge" class="text-xs px-2 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-700">Local (localhost)</span>
+          </div>
+          <input type="text" id="settings-ollama-url" oninput="onOllamaUrlChange()" placeholder="http://localhost:11434" class="w-full border border-slate-300 rounded-lg p-2 font-mono text-xs focus:ring-brand-500">
+        </div>
+
+        <!-- Ollama API Key (Shown for non-local / cloud URLs) -->
+        <div id="settings-api-key-container" class="hidden bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-1.5">
+          <label class="block text-xs font-semibold text-slate-700">Ollama API Key</label>
+          <input type="password" id="settings-ollama-api-key" placeholder="Enter API key" class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:ring-brand-500 bg-white font-mono">
+          <p class="text-xs text-slate-500">Stored locally outside settings.json. Add API key for Cloud-hosted Ollama; leave empty for self-hosted.</p>
+        </div>
+
+        <!-- Model Selection - Cloud (Free text input) -->
+        <div id="settings-cloud-model-container" class="hidden bg-purple-50/70 p-3 rounded-lg border border-purple-200 space-y-1.5">
+          <label class="block text-xs font-semibold text-purple-900">Ollama Cloud Model</label>
+          <input type="text" id="settings-cloud-model-input" placeholder="e.g. gemma4:31b-cloud" class="w-full border border-purple-300 rounded-lg p-2 text-xs focus:ring-purple-500 bg-white font-mono">
+          <p class="text-xs text-purple-700">Enter the exact model name supported by your Ollama Cloud account.</p>
+        </div>
+
+        <!-- Model Selection - Local/Remote Dropdown with Test & Fetch -->
+        <div id="settings-dropdown-model-container" class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <label class="block text-xs font-semibold text-slate-600">Extraction Model</label>
+            <button type="button" id="test-ollama-btn" onclick="testOllamaConnection()" class="text-xs text-brand-600 hover:text-brand-800 font-semibold underline">
+              Test Connection & Refresh Models
+            </button>
+          </div>
+          <select id="settings-model-select" class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:ring-brand-500 font-semibold"></select>
+          <div id="test-ollama-status" class="text-xs text-slate-500"></div>
+        </div>
+
+        <!-- Pagination Preference -->
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Default Companies Per Page</label>
+          <select id="settings-page-size" class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:ring-brand-500 bg-white">
+            <option value="50">50 companies per page</option>
+            <option value="100">100 companies per page</option>
+            <option value="200">200 companies per page</option>
+            <option value="0">No pagination (show all)</option>
+          </select>
+        </div>
+
+        <!-- Local Network Access (Exact replication of Streamlit expander) -->
+        <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <span>🌐</span> Local Network Access
+            </span>
+            <span id="settings-lan-badge" class="text-xs font-semibold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">Available</span>
+          </div>
+          <p class="text-xs text-slate-600" id="settings-lan-caption">Share this address with people on your local network:</p>
+          <div class="flex items-center gap-2">
+            <code id="settings-lan-url" class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-1.5 font-mono text-xs font-bold text-brand-600 select-all overflow-x-auto">http://localhost:8502</code>
+            <button type="button" onclick="copyLanUrl()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold transition shrink-0">
+              Copy Link
+            </button>
+          </div>
+          <p class="text-xs text-slate-400">Others can connect while this app is running and their device can reach this computer on the network.</p>
+        </div>
+
+        <div class="pt-2 border-t border-slate-100 flex items-center justify-between">
+          <button onclick="rebuildDatabase()" class="text-xs text-red-600 hover:underline font-medium">Rebuild from saved data</button>
+          <div class="flex gap-2">
+            <button onclick="closeSettingsModal()" class="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold hover:bg-slate-50">Cancel</button>
+            <button onclick="saveAppSettings()" class="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-xs font-semibold">Save Settings</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- JavaScript Application Logic -->
+  <script>
+    // State
+    const ALL_COLUMNS = [
+      "Company", "Status", "Category", "Subcategory", "Email", "Website", 
+      "Phone", "Socials", "Created", "Notes", "Next follow-up", "Updated"
+    ];
+    let visibleColumns = JSON.parse(localStorage.getItem('lead_extractor_columns') || 'null') || [...ALL_COLUMNS];
+    let currentTab = 'companies';
+    let currentCompanyId = null;
+    let currentCompanyData = null;
+    let searchDebounceTimer = null;
+    let sortDescending = false;
+    let secondarySortDescending = false;
+    let taxonomyData = {};
+    let currentPageSize = parseInt(localStorage.getItem('lead_extractor_page_size') || '50');
+    let _currentLanUrl = '';
+
+    // Initialization
+    document.addEventListener('DOMContentLoaded', () => {
+      // Restore saved page size to selector
+      const savedPageSize = parseInt(localStorage.getItem('lead_extractor_page_size') || '50');
+      currentPageSize = savedPageSize;
+      const sel = document.getElementById('page-size-select');
+      if (sel) sel.value = String(savedPageSize);
+
+      initColumnCheckboxes();
+      fetchStatus();
+      loadCategories();
+      loadCompanies(1);
+      setInterval(fetchStatus, 30000);
+
+      // Close popovers on click outside
+      document.addEventListener('click', (e) => {
+        const colPopover = document.getElementById('columns-popover');
+        const colBtn = document.getElementById('columns-btn');
+        if (colPopover && !colPopover.contains(e.target) && !colBtn.contains(e.target)) {
+          colPopover.classList.add('hidden');
+        }
+      });
+    });
+
+    function onPageSizeChange(val) {
+      currentPageSize = parseInt(val);
+      localStorage.setItem('lead_extractor_page_size', String(currentPageSize));
+      loadCompanies(1);
+    }
+
+    function toggleColumnsPopover() {
+      const el = document.getElementById('columns-popover');
+      el.classList.toggle('hidden');
+    }
+
+    function initColumnCheckboxes() {
+      const container = document.getElementById('column-checkboxes');
+      if (!container) return;
+      container.innerHTML = ALL_COLUMNS.map(col => `
+        <label class="flex items-center gap-2 p-1 hover:bg-slate-50 rounded cursor-pointer select-none">
+          <input type="checkbox" value="${col}" ${visibleColumns.includes(col) ? 'checked' : ''} onchange="onColumnToggle(this)" class="rounded text-brand-500 focus:ring-brand-500 w-3.5 h-3.5">
+          <span class="text-xs text-slate-700">${col}</span>
+        </label>
+      `).join('');
+    }
+
+    function onColumnToggle(checkbox) {
+      const col = checkbox.value;
+      if (checkbox.checked) {
+        if (!visibleColumns.includes(col)) visibleColumns.push(col);
+      } else {
+        visibleColumns = visibleColumns.filter(c => c !== col);
+      }
+      localStorage.setItem('lead_extractor_columns', JSON.stringify(visibleColumns));
+      loadCompanies(1);
+    }
+
+    function toggleSecondarySortDirection() {
+      secondarySortDescending = !secondarySortDescending;
+      document.getElementById('secondary-sort-desc-btn').textContent = secondarySortDescending ? '↑' : '↓';
+      loadCompanies(1);
+    }
+
+    // Toast utility
+    function toast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const toastEl = document.createElement('div');
+      const bg = type === 'success' ? 'bg-emerald-600' : type === 'error' ? 'bg-rose-600' : 'bg-slate-800';
+      toastEl.className = `${bg} text-white text-sm px-4 py-2.5 rounded-lg shadow-lg pointer-events-auto transition transform translate-y-2 opacity-0 duration-200`;
+      toastEl.textContent = message;
+      container.appendChild(toastEl);
+      requestAnimationFrame(() => {
+        toastEl.classList.remove('translate-y-2', 'opacity-0');
+      });
+      setTimeout(() => {
+        toastEl.classList.add('opacity-0');
+        setTimeout(() => toastEl.remove(), 200);
+      }, 3000);
+    }
+
+    // Tabs
+    function switchTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+      document.querySelectorAll('.nav-tab').forEach(el => {
+        el.classList.remove('text-brand-600', 'bg-brand-50', 'font-semibold');
+        el.classList.add('text-slate-600', 'font-medium');
+      });
+
+      const activeTabEl = document.getElementById(`tab-${tab}`);
+      if (activeTabEl) activeTabEl.classList.remove('hidden');
+
+      const navEl = document.getElementById(`nav-${tab}`);
+      if (navEl) {
+        navEl.classList.add('text-brand-600', 'bg-brand-50', 'font-semibold');
+        navEl.classList.remove('text-slate-600', 'font-medium');
+      }
+
+      if (tab === 'companies' && currentCompanyId) {
+        closeCompanyDetail();
+      }
+      if (tab === 'review') loadReviewQueue();
+      if (tab === 'categories') loadCategories();
+    }
+
+    function switchSourceTab(kind) {
+      if (kind === 'url') {
+        document.getElementById('source-pane-url').classList.remove('hidden');
+        document.getElementById('source-pane-text').classList.add('hidden');
+        document.getElementById('source-tab-url').className = 'pb-2 text-sm font-bold border-b-2 border-brand-500 text-brand-600';
+        document.getElementById('source-tab-text').className = 'pb-2 text-sm font-medium text-slate-500 hover:text-slate-800 border-b-2 border-transparent';
+      } else {
+        document.getElementById('source-pane-url').classList.add('hidden');
+        document.getElementById('source-pane-text').classList.remove('hidden');
+        document.getElementById('source-tab-url').className = 'pb-2 text-sm font-medium text-slate-500 hover:text-slate-800 border-b-2 border-transparent';
+        document.getElementById('source-tab-text').className = 'pb-2 text-sm font-bold border-b-2 border-brand-500 text-brand-600';
+      }
+    }
+
+    // Status fetch
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        
+        // Ollama badge
+        const pill = document.getElementById('ollama-pill');
+        const dot = document.getElementById('ollama-dot');
+        const text = document.getElementById('ollama-text');
+        pill.classList.remove('hidden');
+
+        if (data.is_cloud_url) {
+          dot.className = 'w-2 h-2 rounded-full bg-purple-500 animate-pulse';
+          text.textContent = data.selected_model ? `Cloud: ${data.selected_model}` : 'Ollama Cloud';
+        } else if (data.ollama_connected) {
+          dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+          text.textContent = data.selected_model ? `${data.selected_model}` : 'Ollama Connected';
+        } else {
+          dot.className = 'w-2 h-2 rounded-full bg-amber-500';
+          text.textContent = 'Ollama Offline';
+        }
+
+        // Count badges
+        document.getElementById('badge-companies-count').textContent = data.total_companies || 0;
+        const revBadge = document.getElementById('badge-review-count');
+        if (data.review_count > 0) {
+          revBadge.textContent = data.review_count;
+          revBadge.classList.remove('hidden');
+        } else {
+          revBadge.classList.add('hidden');
+        }
+
+        // Header LAN pill
+        const lanIp = data.lan_ip || '';
+        const lanPort = data.lan_port || 8502;
+        const headerLanBtn = document.getElementById('header-lan-btn');
+        const headerLanText = document.getElementById('header-lan-text');
+        if (lanIp && !lanIp.startsWith('127.')) {
+          _currentLanUrl = `http://${lanIp}:${lanPort}`;
+          if (headerLanBtn) {
+            headerLanBtn.classList.remove('hidden');
+            headerLanText.textContent = `LAN: ${_currentLanUrl}`;
+          }
+        } else {
+          _currentLanUrl = `http://localhost:${lanPort}`;
+          if (headerLanBtn) headerLanBtn.classList.add('hidden');
+        }
+
+      } catch (e) {
+        console.error('Failed to fetch status', e);
+      }
+    }
+
+    function copyLanUrl() {
+      const url = _currentLanUrl || document.getElementById('settings-lan-url')?.textContent || '';
+      if (!url) return;
+      navigator.clipboard.writeText(url).then(() => toast('LAN URL copied!', 'success')).catch(() => {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        toast('LAN URL copied!', 'success');
+      });
+    }
+
+    // Toggle advanced filters
+    function toggleAdvancedFilters() {
+      const el = document.getElementById('advanced-filters');
+      el.classList.toggle('hidden');
+    }
+
+    function toggleSortDirection() {
+      sortDescending = !sortDescending;
+      document.getElementById('sort-desc-btn').textContent = sortDescending ? '↑' : '↓';
+      loadCompanies(1);
+    }
+
+    function debounceSearch() {
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => loadCompanies(1), 250);
+    }
+
+    // Load companies list
+    async function loadCompanies(page = 1) {
+      const q = document.getElementById('company-search').value.trim();
+      const cat = document.getElementById('filter-category').value;
+      const subcat = document.getElementById('filter-subcategory').value;
+      const status = document.getElementById('filter-status').value;
+      const hasWebsite = document.getElementById('filter-website').value;
+      const hasPhone = document.getElementById('filter-phone').value;
+      const hasSocials = document.getElementById('filter-socials').value;
+      const sortBy = document.getElementById('sort-by').value;
+      const secondarySortBy = document.getElementById('secondary-sort-by').value;
+      const archived = document.getElementById('filter-archived').checked;
+
+      const params = new URLSearchParams({
+        query: q,
+        category: cat,
+        subcategory: subcat,
+        status: status,
+        has_website: hasWebsite,
+        has_phone: hasPhone,
+        has_socials: hasSocials,
+        sort_by: sortBy,
+        descending: sortDescending,
+        secondary_sort_by: secondarySortBy,
+        secondary_descending: secondarySortDescending,
+        archived: archived,
+        page: page,
+        page_size: currentPageSize,
+      });
+
+      const container = document.getElementById('companies-cards-container');
+      container.innerHTML = '<div class="py-12 text-center text-slate-400 text-sm">Loading companies…</div>';
+
+      try {
+        const res = await fetch(`/api/companies?${params.toString()}`);
+        const data = await res.json();
+
+        // Update category, subcategory & status filter options if not yet populated
+        populateFilterDropdown('filter-category', data.categories || [], cat, 'All Categories');
+        populateFilterDropdown('filter-subcategory', data.subcategories || [], subcat, 'All Subcategories');
+        populateFilterDropdown('filter-status', data.statuses || [], status, 'All Statuses');
+
+        // Header counts
+        document.getElementById('companies-count-label').textContent = 
+          `${data.total} companies found${data.total_pages > 1 ? ` · Page ${data.page} of ${data.total_pages}` : ''}`;
+        document.getElementById('badge-companies-count').textContent = data.total;
+
+        renderPagination(data.page, data.total_pages);
+
+        if (!data.companies || data.companies.length === 0) {
+          container.innerHTML = `
+            <div class="bg-white rounded-xl border border-slate-200 p-12 text-center text-slate-500">
+              <svg class="w-12 h-12 mx-auto text-slate-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+              <p class="font-semibold text-slate-700">No companies found</p>
+              <p class="text-xs text-slate-400 mt-1">Try clearing your search query or adjusting your filters.</p>
+            </div>
+          `;
+          return;
+        }
+
+        // Render Cards (The browsable list like a normal website!)
+        container.innerHTML = data.companies.map(c => {
+          const statusBg = getStatusBadge(c.status);
+          const showStatus = visibleColumns.includes('Status');
+          const showCat = visibleColumns.includes('Category');
+          const showSubcat = visibleColumns.includes('Subcategory');
+          const showEmail = visibleColumns.includes('Email');
+          const showWebsite = visibleColumns.includes('Website');
+          const showPhone = visibleColumns.includes('Phone');
+          const showSocials = visibleColumns.includes('Socials');
+          const showCreated = visibleColumns.includes('Created');
+          const showNotes = visibleColumns.includes('Notes');
+          const showFollowup = visibleColumns.includes('Next follow-up');
+          const showUpdated = visibleColumns.includes('Updated');
+
+          let catBadgeText = '';
+          if (showCat && showSubcat) {
+            const catLabel = c.organization_category ? c.organization_category.replace(/_/g, ' ') : '';
+            const subLabel = c.subcategory ? c.subcategory.replace(/_/g, ' ') : '';
+            if (catLabel && subLabel) catBadgeText = `${catLabel} · ${subLabel}`;
+            else catBadgeText = catLabel || subLabel;
+          } else if (showCat && c.organization_category) {
+            catBadgeText = c.organization_category.replace(/_/g, ' ');
+          } else if (showSubcat && c.subcategory) {
+            catBadgeText = c.subcategory.replace(/_/g, ' ');
+          }
+
+          return `
+            <div class="bg-white hover:bg-slate-50/80 transition-all rounded-xl border border-slate-200 shadow-sm p-4 cursor-pointer hover:border-brand-500/60 hover:shadow-md" onclick="openCompanyDetail('${escapeJs(c.company_id)}')">
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                
+                <!-- Company Title & Badges -->
+                <div class="flex items-center gap-2.5 flex-wrap">
+                  ${c.archived ? '<span class="badge bg-slate-200 text-slate-600">Archived</span>' : ''}
+                  <h3 class="text-base font-bold text-slate-900 hover:text-brand-600 transition">${escapeHtml(c.company_name || 'Unnamed Company')}</h3>
+                  ${showStatus ? `<span class="badge ${statusBg}">${escapeHtml(c.status || 'New')}</span>` : ''}
+                  ${catBadgeText ? `<span class="badge bg-slate-100 text-slate-700 font-medium">${escapeHtml(catBadgeText)}</span>` : ''}
+                </div>
+
+                <!-- Follow-up info & Dates -->
+                <div class="text-xs text-slate-500 flex items-center gap-3 shrink-0">
+                  ${showFollowup && c.next_followup_formatted ? `
+                    <span class="text-amber-700 font-semibold flex items-center gap-1" title="Next follow-up date">
+                      📅 Follow-up: ${c.next_followup_formatted}
+                    </span>
+                  ` : ''}
+                  ${showCreated && c.first_seen_formatted ? `<span>Added ${c.first_seen_formatted}</span>` : ''}
+                  ${showUpdated && c.last_seen_formatted ? `<span>Updated ${c.last_seen_formatted}</span>` : ''}
+                </div>
+
+              </div>
+
+              <!-- Quick Meta Chips -->
+              <div class="mt-3 flex items-center gap-3 flex-wrap text-xs text-slate-500">
+                ${showWebsite && c.website ? `
+                  <a href="${escapeHtml(c.website.startsWith('http') ? c.website : 'https://' + c.website)}" target="_blank" onclick="event.stopPropagation()" class="text-brand-600 hover:underline flex items-center gap-1 font-medium">
+                    🌐 ${escapeHtml(c.website.replace(/^https?:\/\//, ''))} ↗
+                  </a>
+                ` : ''}
+                ${showEmail && c.email_count > 0 ? `<span class="flex items-center gap-1 font-medium text-slate-600">✉️ ${c.email_count} email${c.email_count > 1 ? 's' : ''}</span>` : ''}
+                ${showPhone && c.phone_count > 0 ? `<span class="flex items-center gap-1 font-medium text-slate-600">📞 ${c.phone_count} phone${c.phone_count > 1 ? 's' : ''}</span>` : ''}
+                ${showSocials && c.social_count > 0 ? `<span class="flex items-center gap-1 font-medium text-slate-600">🔗 ${c.social_count} social${c.social_count > 1 ? 's' : ''}</span>` : ''}
+                ${showNotes && c.note_count > 0 ? `<span class="flex items-center gap-1 font-medium text-brand-700 bg-brand-50 px-2 py-0.5 rounded">📝 ${c.note_count} note${c.note_count > 1 ? 's' : ''}</span>` : ''}
+                ${c.locations && c.locations.length ? `<span class="text-slate-400">📍 ${escapeHtml(c.locations.join(', '))}</span>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('');
+
+      } catch (err) {
+        console.error('Error loading companies', err);
+        container.innerHTML = `<div class="p-6 text-center text-rose-600 text-sm">Failed to load companies: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderPagination(current, total) {
+      const topEl = document.getElementById('pagination-controls');
+      const bottomEl = document.getElementById('bottom-pagination-controls');
+
+      if (total <= 1) {
+        topEl.innerHTML = '';
+        bottomEl.innerHTML = '';
+        return;
+      }
+
+      const html = `
+        <button onclick="loadCompanies(${current - 1})" ${current <= 1 ? 'disabled class="opacity-40 cursor-not-allowed"' : ''} class="px-2.5 py-1 text-xs font-semibold border rounded-lg hover:bg-slate-50 transition">◀ Prev</button>
+        <span class="text-xs font-semibold px-2">${current} / ${total}</span>
+        <button onclick="loadCompanies(${current + 1})" ${current >= total ? 'disabled class="opacity-40 cursor-not-allowed"' : ''} class="px-2.5 py-1 text-xs font-semibold border rounded-lg hover:bg-slate-50 transition">Next ▶</button>
+      `;
+
+      topEl.innerHTML = html;
+      bottomEl.innerHTML = html;
+    }
+
+    function populateFilterDropdown(id, items, selected, defaultLabel) {
+      const select = document.getElementById(id);
+      const prevVal = selected || select.value;
+      select.innerHTML = `<option value="">${defaultLabel}</option>` +
+        items.map(item => `<option value="${escapeHtml(item)}" ${item === prevVal ? 'selected' : ''}>${escapeHtml(item.replace(/_/g, ' '))}</option>`).join('');
+    }
+
+    function getStatusBadge(status) {
+      const s = (status || '').toLowerCase();
+      if (s === 'new') return 'bg-sky-100 text-sky-800';
+      if (s.includes('contact')) return 'bg-teal-100 text-teal-800';
+      if (s.includes('qualif') || s.includes('interest')) return 'bg-emerald-100 text-emerald-800';
+      if (s.includes('follow') || s.includes('progress')) return 'bg-amber-100 text-amber-800';
+      if (s.includes('lost') || s.includes('junk')) return 'bg-rose-100 text-rose-800';
+      return 'bg-slate-100 text-slate-800';
+    }
+
+    // ==========================================
+    // COMPANY DETAIL VIEW
+    // ==========================================
+    async function openCompanyDetail(companyId) {
+      currentCompanyId = companyId;
+      document.getElementById('companies-list-view').classList.add('hidden');
+      document.getElementById('company-detail-view').classList.remove('hidden');
+
+      try {
+        const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}`);
+        if (!res.ok) throw new Error('Company not found');
+        const data = await res.json();
+        currentCompanyData = data;
+
+        const c = data.company;
+        const crm = data.crm;
+
+        // Top bar
+        document.getElementById('detail-company-title').textContent = c.company_name || 'Unnamed Company';
+        document.getElementById('detail-archived-badge').classList.toggle('hidden', !c.archived);
+        document.getElementById('detail-archive-btn').textContent = c.archived ? 'Restore' : 'Archive';
+
+        // Information fields
+        document.getElementById('detail-company-name').value = c.company_name || '';
+        document.getElementById('detail-website').value = c.website || '';
+        const linkEl = document.getElementById('detail-website-link');
+        if (c.website) {
+          linkEl.href = c.website.startsWith('http') ? c.website : 'https://' + c.website;
+          linkEl.classList.remove('hidden');
+        } else {
+          linkEl.classList.add('hidden');
+        }
+
+        // Categories
+        populateDetailCategories(c.organization_category, c.subcategory);
+
+        // Multilines
+        document.getElementById('detail-emails').value = (c.emails || []).join('\n');
+        document.getElementById('detail-phones').value = (c.phones || []).join('\n');
+        document.getElementById('detail-addresses').value = (c.addresses || []).join('\n');
+        document.getElementById('detail-locations').value = (c.locations || []).join('\n');
+
+        // Contacts
+        renderContactsTable(c.contacts || []);
+
+        // Sources
+        renderSourcesList(c.sources || []);
+
+        // CRM Controls
+        populateCrmStatuses(crm.status);
+        document.getElementById('detail-crm-rating').value = crm.rating || '';
+        document.getElementById('detail-crm-last-contact').value = crm.last_contacted || '';
+        document.getElementById('detail-crm-next-followup').value = crm.next_followup || '';
+
+        // Notes timeline
+        renderNotesTimeline(crm.notes || []);
+
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch (err) {
+        toast(`Error opening company: ${err.message}`, 'error');
+        closeCompanyDetail();
+      }
+    }
+
+    function closeCompanyDetail() {
+      currentCompanyId = null;
+      currentCompanyData = null;
+      document.getElementById('company-detail-view').classList.add('hidden');
+      document.getElementById('companies-list-view').classList.remove('hidden');
+      loadCompanies();
+    }
+
+    function populateDetailCategories(selectedCat, selectedSub) {
+      const catSelect = document.getElementById('detail-category');
+      const cats = Object.keys(taxonomyData).sort((a,b) => a.localeCompare(b));
+      catSelect.innerHTML = '<option value="">— Select Category —</option>' +
+        cats.map(cat => `<option value="${escapeHtml(cat)}" ${cat === selectedCat ? 'selected' : ''}>${escapeHtml(cat.replace(/_/g, ' '))}</option>`).join('');
+
+      onDetailCategoryChange(selectedSub);
+    }
+
+    function onDetailCategoryChange(preselectedSub = '') {
+      const cat = document.getElementById('detail-category').value;
+      const subSelect = document.getElementById('detail-subcategory');
+      const subs = taxonomyData[cat] || [];
+      subSelect.innerHTML = '<option value="">— Select Subcategory —</option>' +
+        subs.map(sub => `<option value="${escapeHtml(sub)}" ${sub === preselectedSub ? 'selected' : ''}>${escapeHtml(sub.replace(/_/g, ' '))}</option>`).join('');
+    }
+
+    function populateCrmStatuses(currentStatus) {
+      const select = document.getElementById('detail-crm-status');
+      const statuses = ["New", "Contacted", "Follow-up Scheduled", "In Progress", "Qualified", "Unqualified", "Customer", "Lost"];
+      if (currentStatus && !statuses.includes(currentStatus)) statuses.push(currentStatus);
+
+      select.innerHTML = statuses.map(s => `<option value="${escapeHtml(s)}" ${s === currentStatus ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('');
+    }
+
+    // Contacts table
+    function renderContactsTable(contacts) {
+      const tbody = document.getElementById('detail-contacts-tbody');
+      tbody.innerHTML = contacts.map((c, i) => `
+        <tr data-index="${i}">
+          <td class="py-2 pr-2"><input type="text" value="${escapeHtml(c.name || '')}" class="contact-name w-full border border-slate-200 rounded p-1.5 text-xs"></td>
+          <td class="py-2 pr-2"><input type="text" value="${escapeHtml((c.roles || []).join('; '))}" placeholder="Role" class="contact-role w-full border border-slate-200 rounded p-1.5 text-xs"></td>
+          <td class="py-2 pr-2"><input type="text" value="${escapeHtml((c.emails || []).join('; '))}" placeholder="email@example.com" class="contact-email w-full border border-slate-200 rounded p-1.5 text-xs font-mono"></td>
+          <td class="py-2 pr-2"><input type="text" value="${escapeHtml((c.phones || []).join('; '))}" placeholder="Phones" class="contact-phone w-full border border-slate-200 rounded p-1.5 text-xs"></td>
+          <td class="py-2 text-right"><button onclick="removeContactRow(${i})" class="text-rose-500 hover:text-rose-700 font-bold text-base">×</button></td>
+        </tr>
+      `).join('');
+    }
+
+    function addContactRow() {
+      const tbody = document.getElementById('detail-contacts-tbody');
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="py-2 pr-2"><input type="text" placeholder="Full name" class="contact-name w-full border border-slate-200 rounded p-1.5 text-xs"></td>
+        <td class="py-2 pr-2"><input type="text" placeholder="Title/role" class="contact-role w-full border border-slate-200 rounded p-1.5 text-xs"></td>
+        <td class="py-2 pr-2"><input type="text" placeholder="Email" class="contact-email w-full border border-slate-200 rounded p-1.5 text-xs font-mono"></td>
+        <td class="py-2 pr-2"><input type="text" placeholder="Phone" class="contact-phone w-full border border-slate-200 rounded p-1.5 text-xs"></td>
+        <td class="py-2 text-right"><button onclick="this.closest('tr').remove()" class="text-rose-500 hover:text-rose-700 font-bold text-base">×</button></td>
+      `;
+      tbody.appendChild(tr);
+    }
+
+    function removeContactRow(index) {
+      if (!currentCompanyData) return;
+      currentCompanyData.company.contacts.splice(index, 1);
+      renderContactsTable(currentCompanyData.company.contacts);
+    }
+
+    // Sources list
+    function renderSourcesList(sources) {
+      const el = document.getElementById('detail-sources-list');
+      if (!sources || sources.length === 0) {
+        el.innerHTML = '<span class="text-xs text-slate-400">No original files attached.</span>';
+        return;
+      }
+
+      el.innerHTML = sources.map(src => {
+        const name = src.split(/[\\/]/).pop();
+        return `
+          <div class="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200 text-xs font-mono">
+            <span class="truncate max-w-sm">${escapeHtml(name)}</span>
+            <button onclick="reextractSource('${escapeJs(name)}')" class="px-2 py-1 text-xs bg-white border border-slate-300 rounded hover:bg-slate-100 font-sans font-semibold text-slate-700">
+              Re-extract
+            </button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function reextractSource(sourceName) {
+      if (!confirm(`Re-extract ${sourceName} using your configured Ollama model?`)) return;
+      try {
+        toast('Starting re-extraction…');
+        const res = await fetch(`/api/companies/${encodeURIComponent(currentCompanyId)}/reextract`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_name: sourceName })
+        });
+        const data = await res.json();
+        toast('Re-extraction complete!', 'success');
+        openCompanyDetail(currentCompanyId);
+      } catch (err) {
+        toast(`Re-extraction failed: ${err.message}`, 'error');
+      }
+    }
+
+    // Save company details
+    async function saveCompanyDetails() {
+      if (!currentCompanyId) return;
+
+      const contacts = [];
+      document.querySelectorAll('#detail-contacts-tbody tr').forEach(tr => {
+        const name = tr.querySelector('.contact-name')?.value.trim();
+        const role = tr.querySelector('.contact-role')?.value.trim();
+        const email = tr.querySelector('.contact-email')?.value.trim();
+        const phone = tr.querySelector('.contact-phone')?.value.trim();
+        if (name || email || phone) {
+          contacts.push({
+            name: name,
+            roles: role ? role.split(';').map(s => s.trim()).filter(Boolean) : [],
+            emails: email ? email.split(';').map(s => s.trim()).filter(Boolean) : [],
+            phones: phone ? phone.split(';').map(s => s.trim()).filter(Boolean) : [],
+          });
+        }
+      });
+
+      const payload = {
+        company_name: document.getElementById('detail-company-name').value.trim(),
+        website: document.getElementById('detail-website').value.trim(),
+        organization_category: document.getElementById('detail-category').value,
+        subcategory: document.getElementById('detail-subcategory').value,
+        emails: document.getElementById('detail-emails').value.split('\n').map(s => s.trim()).filter(Boolean),
+        phones: document.getElementById('detail-phones').value.split('\n').map(s => s.trim()).filter(Boolean),
+        addresses: document.getElementById('detail-addresses').value.split('\n').map(s => s.trim()).filter(Boolean),
+        locations: document.getElementById('detail-locations').value.split('\n').map(s => s.trim()).filter(Boolean),
+        contacts: contacts,
+      };
+
+      try {
+        const res = await fetch(`/api/companies/${encodeURIComponent(currentCompanyId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Save failed');
+        toast('Company details saved!', 'success');
+        document.getElementById('detail-company-title').textContent = payload.company_name;
+      } catch (err) {
+        toast(`Failed to save: ${err.message}`, 'error');
+      }
+    }
+
+    // Save CRM
+    async function saveCrmDetails() {
+      if (!currentCompanyId) return;
+      const payload = {
+        status: document.getElementById('detail-crm-status').value,
+        rating: document.getElementById('detail-crm-rating').value.trim(),
+        last_contacted: document.getElementById('detail-crm-last-contact').value.trim(),
+        next_followup: document.getElementById('detail-crm-next-followup').value.trim(),
+      };
+
+      try {
+        const res = await fetch(`/api/companies/${encodeURIComponent(currentCompanyId)}/crm`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Save failed');
+        toast('Follow-up CRM details updated!', 'success');
+      } catch (err) {
+        toast(`Failed to update CRM: ${err.message}`, 'error');
+      }
+    }
+
+    // Notes timeline
+    function renderNotesTimeline(notes) {
+      const container = document.getElementById('crm-notes-timeline');
+      if (!notes || notes.length === 0) {
+        container.innerHTML = '<span class="text-xs text-slate-400">No notes yet. Add one above.</span>';
+        return;
+      }
+
+      container.innerHTML = notes.map(n => `
+        <div class="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1.5" id="note-card-${escapeHtml(n.id)}">
+          <div class="flex items-center justify-between text-slate-400">
+            <span>${n.created_at ? n.created_at.slice(0, 16).replace('T', ' ') : 'Date unknown'}</span>
+            <div class="flex gap-2" id="note-actions-${escapeHtml(n.id)}">
+              <button onclick="startEditNote('${escapeJs(n.id)}')" class="hover:text-slate-700">Edit</button>
+              <button onclick="deleteNote('${escapeJs(n.id)}')" class="text-rose-500 hover:text-rose-700 font-bold">Delete</button>
+            </div>
+          </div>
+          <p class="text-slate-800 whitespace-pre-wrap font-sans text-xs" id="note-text-${escapeHtml(n.id)}">${escapeHtml(n.text)}</p>
+          <div class="hidden" id="note-editor-${escapeHtml(n.id)}">
+            <textarea rows="3" class="w-full text-xs border border-brand-400 rounded-lg p-2 focus:ring-brand-500 resize-y font-sans" id="note-textarea-${escapeHtml(n.id)}">${escapeHtml(n.text)}</textarea>
+            <div class="flex gap-2 mt-1.5">
+              <button onclick="saveNoteEdit('${escapeJs(n.id)}')" class="px-3 py-1 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-xs font-semibold">Save</button>
+              <button onclick="cancelNoteEdit('${escapeJs(n.id)}', '${escapeJs(n.text)}')" class="px-3 py-1 border border-slate-300 hover:bg-slate-100 rounded-lg text-xs font-semibold">Cancel</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function addCrmNote() {
+      if (!currentCompanyId) return;
+      const input = document.getElementById('new-note-text');
+      const text = input.value.trim();
+      if (!text) return;
+
+      try {
+        const res = await fetch(`/api/companies/${encodeURIComponent(currentCompanyId)}/notes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        const data = await res.json();
+        input.value = '';
+        renderNotesTimeline(data.notes);
+        toast('Note added!', 'success');
+      } catch (err) {
+        toast(`Failed to add note: ${err.message}`, 'error');
+      }
+    }
+
+    function startEditNote(noteId) {
+      const textEl = document.getElementById(`note-text-${noteId}`);
+      const editorEl = document.getElementById(`note-editor-${noteId}`);
+      const textareaEl = document.getElementById(`note-textarea-${noteId}`);
+      const actionsEl = document.getElementById(`note-actions-${noteId}`);
+      if (!textEl || !editorEl || !textareaEl) return;
+      textEl.classList.add('hidden');
+      editorEl.classList.remove('hidden');
+      if (actionsEl) actionsEl.classList.add('hidden');
+      textareaEl.focus();
+      textareaEl.selectionStart = textareaEl.value.length;
+    }
+
+    function cancelNoteEdit(noteId, originalText) {
+      const textEl = document.getElementById(`note-text-${noteId}`);
+      const editorEl = document.getElementById(`note-editor-${noteId}`);
+      const textareaEl = document.getElementById(`note-textarea-${noteId}`);
+      const actionsEl = document.getElementById(`note-actions-${noteId}`);
+      if (textareaEl) textareaEl.value = originalText;
+      if (textEl) textEl.classList.remove('hidden');
+      if (editorEl) editorEl.classList.add('hidden');
+      if (actionsEl) actionsEl.classList.remove('hidden');
+    }
+
+    async function saveNoteEdit(noteId) {
+      const textareaEl = document.getElementById(`note-textarea-${noteId}`);
+      if (!textareaEl) return;
+      const newText = textareaEl.value.trim();
+      if (!newText) { toast('Note cannot be empty.', 'error'); return; }
+
+      try {
+        const res = await fetch(`/api/companies/${encodeURIComponent(currentCompanyId)}/notes/${encodeURIComponent(noteId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: newText })
+        });
+        const data = await res.json();
+        renderNotesTimeline(data.notes);
+        toast('Note updated!', 'success');
+      } catch (err) {
+        toast(`Failed to update note: ${err.message}`, 'error');
+      }
+    }
+
+    async function editNotePrompt(noteId, oldText) {
+      // Legacy alias – redirects to in-place editor
+      startEditNote(noteId);
+    }
+
+    async function deleteNote(noteId) {
+      if (!confirm('Delete this note?')) return;
+      try {
+        const res = await fetch(`/api/companies/${encodeURIComponent(currentCompanyId)}/notes/${encodeURIComponent(noteId)}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        renderNotesTimeline(data.notes);
+        toast('Note deleted', 'info');
+      } catch (err) {
+        toast(`Failed to delete note: ${err.message}`, 'error');
+      }
+    }
+
+    async function toggleArchiveCurrent() {
+      if (!currentCompanyId) return;
+      try {
+        const res = await fetch(`/api/companies/${encodeURIComponent(currentCompanyId)}/archive`, { method: 'POST' });
+        const data = await res.json();
+        document.getElementById('detail-archived-badge').classList.toggle('hidden', !data.archived);
+        document.getElementById('detail-archive-btn').textContent = data.archived ? 'Restore' : 'Archive';
+        toast(data.archived ? 'Company archived' : 'Company restored', 'info');
+      } catch (err) {
+        toast(`Failed to toggle archive: ${err.message}`, 'error');
+      }
+    }
+
+    function copyCompanyJson() {
+      if (!currentCompanyData) return;
+      const copyPayload = {
+        company: currentCompanyData.company,
+        follow_up: currentCompanyData.crm,
+      };
+      navigator.clipboard.writeText(JSON.stringify(copyPayload, null, 2))
+        .then(() => toast('Copied JSON payload to clipboard!', 'success'))
+        .catch(() => toast('Clipboard copy blocked by browser', 'error'));
+    }
+
+    // ==========================================
+    // ADD SOURCE
+    // ==========================================
+    async function submitUrls() {
+      const input = document.getElementById('source-urls-input');
+      const urls = input.value.trim();
+      if (!urls) return;
+
+      const btn = document.getElementById('fetch-urls-btn');
+      btn.disabled = true;
+      btn.innerHTML = '<span>Fetching pages (may take ~10s per page)…</span>';
+      const resultsDiv = document.getElementById('fetch-results');
+      resultsDiv.classList.remove('hidden');
+      resultsDiv.innerHTML = '<span class="text-xs text-slate-400">Loading pages and waiting for render…</span>';
+
+      try {
+        const res = await fetch('/api/sources/url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls })
+        });
+        const data = await res.json();
+        resultsDiv.innerHTML = data.results.map(r => `
+          <div class="p-2.5 rounded-lg border text-xs flex items-center justify-between ${r.status === 'saved' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800'}">
+            <span class="truncate max-w-md font-mono">${escapeHtml(r.url)}</span>
+            <span class="font-bold">${r.status === 'saved' ? '✅ Saved' : '❌ Failed: ' + escapeHtml(r.error)}</span>
+          </div>
+        `).join('');
+        input.value = '';
+        toast('URL batch submitted! Ingestion will run on the next scan cycle.', 'success');
+      } catch (err) {
+        toast(`Fetch error: ${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Fetch Pages and Queue Ingestion</span>';
+      }
+    }
+
+    async function submitText() {
+      const input = document.getElementById('source-text-input');
+      const text = input.value.trim();
+      if (!text) return;
+
+      try {
+        const res = await fetch('/api/sources/text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        const data = await res.json();
+        input.value = '';
+        toast(`Source saved as ${data.file}! Processing will start shortly.`, 'success');
+      } catch (err) {
+        toast(`Error saving text: ${err.message}`, 'error');
+      }
+    }
+
+    // ==========================================
+    // CREATE LEAD MANUALLY
+    // ==========================================
+    async function submitManualLead() {
+      const name = document.getElementById('manual-name').value.trim();
+      if (!name) {
+        alert('Company name is required');
+        return;
+      }
+
+      const payload = {
+        company_name: name,
+        website: document.getElementById('manual-website').value.trim(),
+        organization_category: document.getElementById('manual-category').value,
+        emails: document.getElementById('manual-emails').value.split('\n').map(s => s.trim()).filter(Boolean),
+        phones: document.getElementById('manual-phones').value.split('\n').map(s => s.trim()).filter(Boolean),
+        addresses: document.getElementById('manual-addresses').value.split('\n').map(s => s.trim()).filter(Boolean),
+        locations: document.getElementById('manual-locations').value.split('\n').map(s => s.trim()).filter(Boolean),
+        notes: document.getElementById('manual-notes').value.split('\n').map(s => s.trim()).filter(Boolean),
+      };
+
+      try {
+        const res = await fetch('/api/companies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        toast(`Created lead: ${name}!`, 'success');
+        
+        // Reset form
+        document.getElementById('manual-name').value = '';
+        document.getElementById('manual-website').value = '';
+        document.getElementById('manual-emails').value = '';
+        document.getElementById('manual-phones').value = '';
+        document.getElementById('manual-addresses').value = '';
+        document.getElementById('manual-locations').value = '';
+        document.getElementById('manual-notes').value = '';
+
+        // Switch to companies and open
+        switchTab('companies');
+        openCompanyDetail(data.company_id);
+      } catch (err) {
+        toast(`Error creating lead: ${err.message}`, 'error');
+      }
+    }
+
+    // ==========================================
+    // CATEGORIES
+    // ==========================================
+    async function loadCategories() {
+      try {
+        const res = await fetch('/api/categories');
+        const data = await res.json();
+        taxonomyData = data.taxonomy || {};
+
+        // Populate manual category
+        const manualSelect = document.getElementById('manual-category');
+        if (manualSelect) {
+          const cats = Object.keys(taxonomyData).sort();
+          manualSelect.innerHTML = '<option value="">— Select Category —</option>' +
+            cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c.replace(/_/g, ' '))}</option>`).join('');
+        }
+
+        // Populate parent category select in Categories tab
+        const parentSelect = document.getElementById('parent-category-select');
+        if (parentSelect) {
+          const cats = Object.keys(taxonomyData).sort();
+          parentSelect.innerHTML = '<option value="">— Select an existing category —</option>' +
+            cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c.replace(/_/g, ' '))}</option>`).join('');
+        }
+
+        // Render Tree
+        const container = document.getElementById('categories-tree-container');
+        if (container) {
+          const keys = Object.keys(taxonomyData).sort();
+          if (keys.length === 0) {
+            container.innerHTML = '<span class="text-xs text-slate-400">No categories created yet.</span>';
+            return;
+          }
+          container.innerHTML = keys.map(cat => {
+            const subs = taxonomyData[cat] || [];
+            return `
+              <div class="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2">
+                <div class="flex items-center justify-between border-b pb-1.5">
+                  <span class="font-bold text-sm text-slate-900">${escapeHtml(cat.replace(/_/g, ' '))}</span>
+                  <button onclick="deleteCategory('${escapeJs(cat)}')" class="text-xs text-rose-500 hover:text-rose-700 font-semibold">Delete</button>
+                </div>
+                <div class="flex flex-wrap gap-1.5 pt-1">
+                  ${subs.length ? subs.map(sub => `
+                    <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-white border border-slate-200 rounded-md text-slate-700">
+                      ${escapeHtml(sub.replace(/_/g, ' '))}
+                      <button onclick="deleteCategory('${escapeJs(cat)}', '${escapeJs(sub)}')" class="text-slate-400 hover:text-rose-600 font-bold ml-1">×</button>
+                    </span>
+                  `).join('') : '<span class="text-xs text-slate-400">No subcategories yet.</span>'}
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      } catch (err) {
+        console.error('Failed to load categories', err);
+      }
+    }
+
+    async function submitNewCategories() {
+      const newCat = document.getElementById('new-category-name').value.trim();
+      const parentCat = document.getElementById('parent-category-select').value;
+      const targetCat = newCat || parentCat;
+      if (!targetCat) {
+        alert('Please specify a category name or select an existing one.');
+        return;
+      }
+
+      const subInput = document.getElementById('new-subcategories-input').value;
+      const subcategories = subInput.split('\n').map(s => s.trim()).filter(Boolean);
+
+      try {
+        await fetch('/api/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: targetCat, subcategories: subcategories })
+        });
+        document.getElementById('new-category-name').value = '';
+        document.getElementById('new-subcategories-input').value = '';
+        loadCategories();
+        toast('Categories saved!', 'success');
+      } catch (err) {
+        toast(`Error saving categories: ${err.message}`, 'error');
+      }
+    }
+
+    async function deleteCategory(cat, sub = '') {
+      const msg = sub ? `Remove subcategory "${sub}" from "${cat}"?` : `Delete category "${cat}" and all its subcategories?`;
+      if (!confirm(msg)) return;
+
+      try {
+        await fetch('/api/categories', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: cat, subcategory: sub })
+        });
+        loadCategories();
+        toast(sub ? 'Subcategory removed' : 'Category deleted', 'info');
+      } catch (err) {
+        toast(`Error: ${err.message}`, 'error');
+      }
+    }
+
+    // ==========================================
+    // REVIEW QUEUE
+    // ==========================================
+    async function loadReviewQueue() {
+      const container = document.getElementById('review-items-container');
+      container.innerHTML = '<span class="text-xs text-slate-400">Loading review queue…</span>';
+
+      try {
+        const res = await fetch('/api/review');
+        const data = await res.json();
+
+        document.getElementById('dismissed-count').textContent = (data.dismissed || []).length;
+        document.getElementById('dismissed-items-list').innerHTML = (data.dismissed || []).map(d => `
+          <div>• ${escapeHtml(d.source_file)}</div>
+        `).join('') || '<div>No dismissed items.</div>';
+
+        if (!data.review || data.review.length === 0) {
+          container.innerHTML = `
+            <div class="p-8 text-center bg-emerald-50 text-emerald-800 rounded-xl border border-emerald-200">
+              <span class="font-bold">✅ Review queue is empty!</span>
+              <p class="text-xs mt-1 text-emerald-700">All sources were successfully parsed or dismissed.</p>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = data.review.map(item => `
+          <div class="p-4 bg-amber-50/70 border border-amber-200 rounded-xl text-xs space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="font-bold font-mono text-amber-900">${escapeHtml(item.source_file)}</span>
+              <span class="badge bg-amber-200 text-amber-900">${escapeHtml(item.reason)}</span>
+            </div>
+            ${item.error ? `<div class="bg-white p-2 rounded border border-amber-200 text-rose-700 font-mono text-xs overflow-x-auto">${escapeHtml(item.error)}</div>` : ''}
+            <div class="flex items-center justify-end gap-2 pt-1">
+              ${item.archived_exists ? `
+                <button onclick="retryReview('${escapeJs(item.source_file)}')" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold transition">
+                  Retry Extraction
+                </button>
+              ` : ''}
+              <button onclick="dismissReview('${escapeJs(item.file)}')" class="px-3 py-1.5 border border-amber-300 hover:bg-amber-100 text-amber-800 rounded-lg font-semibold transition">
+                Dismiss
+              </button>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        container.innerHTML = `<span class="text-xs text-rose-600">Error loading review queue: ${escapeHtml(err.message)}</span>`;
+      }
+    }
+
+    async function retryReview(sourceFile) {
+      try {
+        toast('Retrying extraction…');
+        const res = await fetch('/api/review/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_file: sourceFile })
+        });
+        const data = await res.json();
+        toast('Retry complete!', 'success');
+        loadReviewQueue();
+      } catch (err) {
+        toast(`Retry failed: ${err.message}`, 'error');
+      }
+    }
+
+    async function dismissReview(fileName) {
+      try {
+        await fetch('/api/review/dismiss', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: fileName })
+        });
+        toast('Item dismissed', 'info');
+        loadReviewQueue();
+        fetchStatus();
+      } catch (err) {
+        toast(`Dismiss failed: ${err.message}`, 'error');
+      }
+    }
+
+    // ==========================================
+    // SETTINGS MODAL
+    // ==========================================
+
+    function _updateServerTypeBadge(url) {
+      const badge = document.getElementById('settings-server-type-badge');
+      const apiKeyContainer = document.getElementById('settings-api-key-container');
+      const cloudModelContainer = document.getElementById('settings-cloud-model-container');
+      const dropdownModelContainer = document.getElementById('settings-dropdown-model-container');
+      if (!badge) return;
+
+      const lc = url.toLowerCase();
+      const isCloud = lc.includes('ollama.com') && lc.startsWith('https');
+      const isLocal = lc.includes('localhost') || lc.includes('127.0.0.1') || lc.startsWith('http://192.') || lc.startsWith('http://10.') || lc.startsWith('http://172.');
+
+      if (isCloud) {
+        badge.textContent = '☁️ Ollama Cloud';
+        badge.className = 'text-xs px-2 py-0.5 rounded font-semibold bg-purple-100 text-purple-700';
+        apiKeyContainer.classList.remove('hidden');
+        cloudModelContainer.classList.remove('hidden');
+        dropdownModelContainer.classList.add('hidden');
+      } else if (isLocal) {
+        badge.textContent = '🏠 Local (localhost)';
+        badge.className = 'text-xs px-2 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-700';
+        apiKeyContainer.classList.add('hidden');
+        cloudModelContainer.classList.add('hidden');
+        dropdownModelContainer.classList.remove('hidden');
+      } else {
+        badge.textContent = '🌐 Remote Server';
+        badge.className = 'text-xs px-2 py-0.5 rounded font-semibold bg-sky-100 text-sky-700';
+        apiKeyContainer.classList.remove('hidden');
+        cloudModelContainer.classList.add('hidden');
+        dropdownModelContainer.classList.remove('hidden');
+      }
+    }
+
+    function onOllamaUrlChange() {
+      const url = document.getElementById('settings-ollama-url').value;
+      _updateServerTypeBadge(url);
+    }
+
+    async function testOllamaConnection() {
+      const url = document.getElementById('settings-ollama-url').value.trim();
+      const apiKey = document.getElementById('settings-ollama-api-key').value.trim();
+      const statusEl = document.getElementById('test-ollama-status');
+      const btn = document.getElementById('test-ollama-btn');
+      if (!statusEl) return;
+
+      statusEl.textContent = 'Testing connection…';
+      statusEl.className = 'text-xs text-slate-500 mt-1';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/settings/test-ollama', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ollama_url: url, ollama_api_key: apiKey })
+        });
+        const data = await res.json();
+        statusEl.textContent = data.message || (data.success ? 'Connected!' : 'Failed');
+        statusEl.className = data.success ? 'text-xs text-emerald-600 font-semibold mt-1' : 'text-xs text-rose-600 font-semibold mt-1';
+        
+        if (data.success && data.models && data.models.length > 0) {
+          const modelSelect = document.getElementById('settings-model-select');
+          const curVal = modelSelect.value;
+          modelSelect.innerHTML = data.models.map(m => `<option value="${escapeHtml(m)}" ${m === curVal ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('');
+        }
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.className = 'text-xs text-rose-600 font-semibold mt-1';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function openSettingsModal() {
+      document.getElementById('settings-modal').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/settings');
+        const data = await res.json();
+
+        document.getElementById('settings-data-path').value = data.data_path || '';
+        document.getElementById('settings-resolved-root').textContent = data.resolved_root || '';
+
+        const url = data.ollama_url || 'http://localhost:11434';
+        document.getElementById('settings-ollama-url').value = url;
+        _updateServerTypeBadge(url);
+
+        document.getElementById('settings-ollama-api-key').value = data.ollama_api_key || '';
+
+        // Pagination preference
+        const pageSizeEl = document.getElementById('settings-page-size');
+        if (pageSizeEl) pageSizeEl.value = String(data.page_size || currentPageSize || 50);
+
+        // Model select (dropdown for local/remote)
+        const modelSelect = document.getElementById('settings-model-select');
+        const models = data.available_models || [];
+        if (data.selected_model && !models.includes(data.selected_model)) {
+          models.unshift(data.selected_model);
+        }
+        modelSelect.innerHTML = models.length ?
+          models.map(m => `<option value="${escapeHtml(m)}" ${m === data.selected_model ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('') :
+          `<option value="${escapeHtml(data.selected_model || '')}">${escapeHtml(data.selected_model || 'No models detected – click Test Connection')}</option>`;
+
+        // Cloud model text input
+        const cloudModelInput = document.getElementById('settings-cloud-model-input');
+        if (cloudModelInput) cloudModelInput.value = data.selected_model || '';
+
+        // LAN Network Access section
+        const lanIp = data.lan_ip || '';
+        const lanPort = data.lan_port || 8502;
+        const lanUrlEl = document.getElementById('settings-lan-url');
+        const lanBadge = document.getElementById('settings-lan-badge');
+        const lanCaption = document.getElementById('settings-lan-caption');
+
+        if (lanIp && !lanIp.startsWith('127.')) {
+          _currentLanUrl = `http://${lanIp}:${lanPort}`;
+          if (lanUrlEl) lanUrlEl.textContent = _currentLanUrl;
+          if (lanBadge) { lanBadge.textContent = 'Available'; lanBadge.className = 'text-xs font-semibold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800'; }
+          if (lanCaption) lanCaption.textContent = 'Share this address with people on your local network:';
+        } else {
+          _currentLanUrl = `http://localhost:${lanPort}`;
+          if (lanUrlEl) lanUrlEl.textContent = _currentLanUrl;
+          if (lanBadge) { lanBadge.textContent = 'No LAN IP'; lanBadge.className = 'text-xs font-semibold px-2 py-0.5 rounded bg-slate-200 text-slate-600'; }
+          if (lanCaption) lanCaption.textContent = 'Could not detect a LAN IP address. Make sure the computer is connected to the network.';
+        }
+
+      } catch (err) {
+        toast(`Failed to load settings: ${err.message}`, 'error');
+      }
+    }
+
+    function closeSettingsModal() {
+      document.getElementById('settings-modal').classList.add('hidden');
+    }
+
+    async function saveAppSettings() {
+      const isCloud = !document.getElementById('settings-cloud-model-container').classList.contains('hidden');
+      const selectedModel = isCloud
+        ? (document.getElementById('settings-cloud-model-input')?.value.trim() || '')
+        : (document.getElementById('settings-model-select')?.value || '');
+
+      const newPageSize = parseInt(document.getElementById('settings-page-size')?.value || String(currentPageSize));
+
+      const payload = {
+        data_path: document.getElementById('settings-data-path').value.trim(),
+        ollama_url: document.getElementById('settings-ollama-url').value.trim(),
+        ollama_api_key: document.getElementById('settings-ollama-api-key').value.trim(),
+        selected_model: selectedModel,
+        page_size: newPageSize,
+      };
+
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        // Apply new page size immediately
+        if (newPageSize !== currentPageSize) {
+          currentPageSize = newPageSize;
+          localStorage.setItem('lead_extractor_page_size', String(currentPageSize));
+          const sel = document.getElementById('page-size-select');
+          if (sel) sel.value = String(currentPageSize);
+        }
+
+        toast('Settings saved successfully!', 'success');
+        closeSettingsModal();
+        fetchStatus();
+        loadCompanies(1);
+      } catch (err) {
+        toast(`Failed to save settings: ${err.message}`, 'error');
+      }
+    }
+
+    async function rebuildDatabase() {
+      if (!confirm('Rebuild company records from original saved JSON extractions? This safely validates and re-merges records.')) return;
+      try {
+        toast('Rebuilding database in background…');
+        const res = await fetch('/api/rebuild', { method: 'POST' });
+        const data = await res.json();
+        toast(`Rebuilt ${data.extracted} extraction records!`, 'success');
+        closeSettingsModal();
+        loadCompanies();
+      } catch (err) {
+        toast(`Rebuild failed: ${err.message}`, 'error');
+      }
+    }
+
+    // Helper escaper
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+    function escapeJs(str) {
+      if (!str) return '';
+      return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+    }
+  </script>
+</body>
+</html>
