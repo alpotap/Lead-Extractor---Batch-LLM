@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
+import asyncio
 import streamlit as st
 
 from models.lead import (
@@ -381,7 +382,7 @@ if active_section == "Add a source":
             for index, page_url in enumerate(page_urls, start=1):
                 progress.progress((index - 1) / len(page_urls), text=f"Fetching {index}/{len(page_urls)}: {page_url}")
                 try:
-                    captured_html = capture_rendered_html(page_url, settle_seconds=10)
+                    captured_html = asyncio.run(capture_rendered_html(page_url, settle_seconds=10))
                     host = safe_stem(urlparse(page_url).hostname or "website")
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                     target = root / "ingest" / "incoming" / f"web_{host}_{stamp}.html"

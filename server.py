@@ -11,13 +11,13 @@ import socket
 import threading
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from models.lead import (
@@ -614,20 +614,15 @@ async def api_create_lead_manually(request: Request) -> dict[str, Any]:
     return {"status": "success", "company_id": company_id, "company": record}
 
 
-@app.post("/api/sources/url")
-async def api_fetch_url(request: Request) -> dict[str, Any]:
-    root = _get_root()
-    payload = await request.json()
-    urls_input = str(payload.get("urls", "")).strip()
-    if not urls_input:
-        raise HTTPException(status_code=400, detail="URL is required")
-
-    url_list = list(dict.fromkeys(u.strip() for u in re.split(r"[,\n\r]+", urls_input) if u.strip()))
-    results = []
-
-    for page_url in url_list:
+async def _url_fetch_progress(urls: list[str]) -> AsyncGenerator[dict[str, Any], None]:
+    """Yield progress updates as each URL is processed."""
+    from services.web_capture import capture_rendered_html
+    results: list[dict[str, Any]] = []
+    root = data_root(load_settings())
+    for i, page_url in enumerate(urls, start=1):
+        yield {"type": "progress", "index": i, "total": len(urls), "url": page_url}
         try:
-            html = capture_rendered_html(page_url, settle_seconds=10)
+            html = await capture_rendered_html(page_url, settle_seconds=10)
             host = safe_stem(urlparse(page_url).hostname or "website")
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             target = root / "ingest" / "incoming" / f"web_{host}_{stamp}.html"
@@ -637,8 +632,19 @@ async def api_fetch_url(request: Request) -> dict[str, Any]:
         except Exception as exc:
             configure_logging(root).exception("Could not fetch page url=%s", page_url)
             results.append({"url": page_url, "status": "failed", "error": str(exc)})
+    yield {"type": "complete", "results": results, "total": len(urls), "saved": sum(1 for r in results if r["status"] == "saved"), "failed": sum(1 for r in results if r["status"] == "failed")}
 
-    return {"status": "success", "results": results}
+
+@app.post("/api/sources/url")
+async def api_fetch_url(request: Request) -> StreamingResponse:
+    root = _get_root()
+    payload = await request.json()
+    urls_input = str(payload.get("urls", "")).strip()
+    if not urls_input:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    url_list = list(dict.fromkeys(u.strip() for u in re.split(r"[,\n\r]+", urls_input) if u.strip()))
+    return StreamingResponse(_url_fetch_progress(url_list), media_type="application/json")
 
 
 @app.post("/api/sources/text")

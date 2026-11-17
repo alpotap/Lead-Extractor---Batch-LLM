@@ -17,7 +17,7 @@ PACKAGE_DIR="$STAGE_ROOT/$PACKAGE_NAME"
 mkdir -p "$PACKAGE_DIR"
 trap 'rm -rf "$STAGE_ROOT"' EXIT
 
-for file in app.py README.md REFERENCE.md LICENSE VERSION requirements.txt; do
+for file in app.py README.md REFERENCE.md LICENSE VERSION requirements.txt "Start Lead Web.bat" server.py; do
     cp "$REPO_ROOT/$file" "$PACKAGE_DIR/"
 done
 if [[ "$PLATFORM" == macos ]]; then
@@ -28,7 +28,7 @@ fi
 mkdir -p "$PACKAGE_DIR/docs"
 cp "$REPO_ROOT/docs/MACOS.md" "$REPO_ROOT/docs/LINUX.md" "$PACKAGE_DIR/docs/"
 
-for directory in assets config models services scripts; do
+for directory in assets config models services scripts static; do
     mkdir -p "$PACKAGE_DIR/$directory"
     while IFS= read -r -d '' file; do
         case "$(basename "$file")" in settings.json|secrets.json|*.pyc) continue ;; esac

@@ -27,10 +27,12 @@ try {
         "VERSION",
         "requirements.txt",
         "Start Lead Desk.bat",
+        "Start Lead Web.bat",
         "docs/MACOS.md",
         "docs/LINUX.md",
         "Start Lead Extractor.command",
-        "Start Lead Extractor.sh"
+        "Start Lead Extractor.sh",
+        "server.py"
     )
     foreach ($file in $files) {
         $destination = Join-Path $packageDirectory $file
@@ -38,7 +40,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination $destination
     }
 
-    foreach ($directory in @("assets", "config", "models", "services", "scripts")) {
+    foreach ($directory in @("assets", "config", "models", "services", "scripts", "static")) {
         $source = Join-Path $repoRoot $directory
         $destination = Join-Path $packageDirectory $directory
         New-Item -ItemType Directory -Path $destination -Force | Out-Null
