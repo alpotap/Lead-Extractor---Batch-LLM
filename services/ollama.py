@@ -263,8 +263,14 @@ def extract_lead(
     raw_log_backups: int = 5,
     category_taxonomy: dict[str, list[str]] | None = None,
     api_key: str = "",
+    company_hint: str = "",
 ) -> dict[str, Any]:
-    """Extract lead information from source text using the configured AI API."""
+    """Extract lead information from source text using the configured AI API.
+
+    When ``company_hint`` is provided (for example a company name entered
+    manually while retrying a review item), it is used as the authoritative
+    company name so the extraction runs with the value the user entered.
+    """
     schema = json.dumps(EXTRACTION_SCHEMA, ensure_ascii=False, indent=2)
     # Keep prompts bounded, but carry nearby text across boundaries so a name,
     # heading, or contact detail is less likely to be isolated in one segment.
@@ -295,6 +301,8 @@ def extract_lead(
         for key, value in EXTRACTION_TEMPLATE.items()
     }
     taxonomy = category_taxonomy if category_taxonomy is not None else {}
+    if company_hint.strip():
+        combined["company_name"] = company_hint.strip()
     taxonomy_prompt = "\n".join(
         f"- {category} (display name: {category.replace('_', ' ').title()}): {', '.join(subcategories) if subcategories else '(no subcategories listed)'}"
         for category, subcategories in taxonomy.items()

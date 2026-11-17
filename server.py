@@ -732,6 +732,7 @@ def api_get_review() -> dict[str, Any]:
                 "confidence": data.get("confidence"),
                 "created_at": data.get("created_at", ""),
                 "archived_exists": archived_source.exists(),
+                "extraction": data.get("extraction"),
             })
 
     dismissed_dir = review_dir / "dismissed"
@@ -757,8 +758,31 @@ async def api_retry_review(request: Request) -> dict[str, Any]:
     if not incoming_source.exists():
         shutil.copy2(archived_source, incoming_source)
 
-    settings = _get_settings()
-    outcome = process_incoming(settings, only_names={file_name})
+    # Start from saved settings and apply only the per-retry overrides, without
+    # mutating the persisted settings used by the background scanner.
+    settings = dict(_get_settings())
+    if payload.get("ollama_url"):
+        settings["ollama_url"] = str(payload["ollama_url"]).rstrip("/")
+    if payload.get("ollama_model") is not None:
+        settings["selected_model"] = str(payload["ollama_model"]).strip()
+    if payload.get("ollama_api_key") is not None:
+        settings["ollama_api_key"] = str(payload["ollama_api_key"]).strip()
+    if payload.get("minimum_confidence") is not None:
+        try:
+            settings["minimum_extraction_confidence"] = float(payload["minimum_confidence"])
+        except (ValueError, TypeError):
+            pass
+
+    # Optional manual field overrides (e.g. a company name entered by hand when
+    # the extraction missed it). These are passed into the extraction run.
+    manual_fields: dict[str, Any] = {}
+    company_name = str(payload.get("company_name") or "").strip()
+    if company_name:
+        manual_fields["company_name"] = company_name
+
+    outcome = process_incoming(
+        settings, only_names={file_name}, manual_fields=manual_fields or None
+    )
     _invalidate_caches()
     return {"status": "success", "outcome": outcome}
 

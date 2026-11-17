@@ -208,11 +208,17 @@ def _archive(source: Path, archive_dir: Path) -> Path:
     return destination
 
 
-def process_incoming(settings: dict[str, Any], only_names: set[str] | None = None) -> dict[str, int]:
+def process_incoming(
+    settings: dict[str, Any],
+    only_names: set[str] | None = None,
+    manual_fields: dict[str, Any] | None = None,
+) -> dict[str, int]:
     root = data_root(settings)
     logger = configure_logging(root)
     counts = {"processed": 0, "review": 0, "errors": 0, "merged": 0, "new": 0}
     cloud_ollama = is_ollama_cloud_url(settings["ollama_url"])
+    manual_fields = manual_fields or {}
+    manual_company_name = str(manual_fields.get("company_name") or "").strip()
     openai_compat = is_openai_compatible_url(settings["ollama_url"])
     if cloud_ollama or openai_compat:
         available_models = []
@@ -263,6 +269,7 @@ def process_incoming(settings: dict[str, Any], only_names: set[str] | None = Non
                 raw_log_backups=int(settings.get("raw_llm_log_backups", 5)),
                 category_taxonomy=category_taxonomy,
                 api_key=str(settings.get("ollama_api_key", "")),
+                company_hint=manual_company_name,
             )
             record = _normalize_extraction(raw, category_taxonomy)
             confidence = _confidence(record)

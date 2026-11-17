@@ -579,6 +579,68 @@
       </div>
     </div>
 
+    <!-- Review Retry Dialog (manual overrides before re-extraction) -->
+    <div id="review-retry-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto">
+      <div class="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200 my-8">
+        <div class="flex items-center justify-between border-b pb-3 mb-4">
+          <h3 class="text-lg font-bold text-slate-900">Retry Extraction</h3>
+          <button onclick="closeReviewRetryDialog()" class="text-slate-400 hover:text-slate-600 text-xl font-bold">×</button>
+        </div>
+
+        <div class="text-sm space-y-3 mb-4">
+          <div>
+            <span class="font-semibold text-slate-700">Source:</span>
+            <span id="retry-source-file" class="font-mono text-xs text-slate-500 break-all block mt-0.5"></span>
+          </div>
+          <div>
+            <span class="font-semibold text-slate-700">Reason:</span>
+            <span id="retry-reason" class="text-slate-600 block mt-0.5"></span>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="font-semibold text-slate-700">Confidence:</span>
+            <span id="retry-confidence-badge" class="text-xs font-mono px-1.5 py-0.5 rounded border text-slate-500 border-slate-200">—</span>
+          </div>
+          <div id="retry-error-row" class="hidden">
+            <span class="font-semibold text-slate-700 block">Error:</span>
+            <pre id="retry-error" class="text-rose-700 text-xs bg-rose-50 p-2 rounded border border-rose-100 break-all"></pre>
+          </div>
+          <div id="retry-extraction-row" class="hidden">
+            <button onclick="toggleRetryExtractionPreview()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 underline flex items-center gap-1">
+              <span id="retry-extraction-toggle">Show previous extraction ▾</span>
+            </button>
+            <pre id="retry-extraction-preview" class="hidden mt-2 text-xs bg-slate-50 p-2 rounded border border-slate-200 break-all overflow-x-auto"></pre>
+          </div>
+        </div>
+
+        <div class="space-y-3 text-sm">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Company name (manual override)</label>
+            <p class="text-xs text-slate-400 mb-1">Enter the company name if it was missing from the extraction. Leave blank to use the extracted value.</p>
+            <input type="text" id="retry-company-name" placeholder="Acme Corporation" class="w-full border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Ollama model</label>
+            <p class="text-xs text-slate-400 mb-1">Leave blank to use the saved model.</p>
+            <input type="text" id="retry-model" placeholder="uses saved model" class="w-full border border-slate-300 rounded-lg p-2 focus:ring-brand-500 font-mono text-xs">
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Minimum confidence</label>
+              <input type="number" id="retry-min-confidence" min="0" max="1" step="0.05" placeholder="0.35" class="w-full border border-slate-300 rounded-lg p-2 focus:ring-brand-500 font-mono text-xs">
+            </div>
+            <div class="flex items-end">
+              <button onclick="useSavedReviewSettings()" class="px-3 py-2 text-xs border border-slate-300 rounded hover:bg-slate-50">Use saved settings</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-4 border-t flex justify-end gap-2">
+          <button onclick="closeReviewRetryDialog()" class="px-4 py-2 border border-slate-300 rounded-lg text-sm font-semibold hover:bg-slate-50">Cancel</button>
+          <button onclick="submitReviewRetry()" id="retry-submit-btn" class="px-5 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition shadow-sm">Retry Extraction</button>
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <!-- ========================================== -->
@@ -1678,16 +1740,21 @@
           return;
         }
 
-        container.innerHTML = data.review.map(item => `
+        container.innerHTML = data.review.map(item => {
+          const conf = item.confidence != null ? `Confidence: ${item.confidence.toFixed(2)}` : '';
+          return `
           <div class="p-4 bg-amber-50/70 border border-amber-200 rounded-xl text-xs space-y-2">
-            <div class="flex items-center justify-between">
-              <span class="font-bold font-mono text-amber-900">${escapeHtml(item.source_file)}</span>
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex flex-col gap-0.5">
+                <span class="font-bold font-mono text-amber-900">${escapeHtml(item.source_file)}</span>
+                ${conf ? `<span class="text-slate-500">${conf}</span>` : ''}
+              </div>
               <span class="badge bg-amber-200 text-amber-900">${escapeHtml(item.reason)}</span>
             </div>
             ${item.error ? `<div class="bg-white p-2 rounded border border-amber-200 text-rose-700 font-mono text-xs overflow-x-auto">${escapeHtml(item.error)}</div>` : ''}
             <div class="flex items-center justify-end gap-2 pt-1">
               ${item.archived_exists ? `
-                <button onclick="retryReview('${escapeJs(item.source_file)}')" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold transition">
+                <button onclick="openReviewRetryDialog(${escapeJs(JSON.stringify(item))})" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold transition">
                   Retry Extraction
                 </button>
               ` : ''}
@@ -1696,24 +1763,106 @@
               </button>
             </div>
           </div>
-        `).join('');
+        `;
+        }).join('');
       } catch (err) {
         container.innerHTML = `<span class="text-xs text-rose-600">Error loading review queue: ${escapeHtml(err.message)}</span>`;
       }
     }
 
-    async function retryReview(sourceFile) {
+    let reviewRetryItem = null;
+
+    async function openReviewRetryDialog(item) {
+      reviewRetryItem = item;
+      const modal = document.getElementById('review-retry-modal');
+      document.getElementById('retry-source-file').textContent = item.source_file || '';
+      document.getElementById('retry-reason').textContent = item.reason || 'Needs review';
+      const confBadge = document.getElementById('retry-confidence-badge');
+      if (item.confidence != null) {
+        confBadge.textContent = item.confidence.toFixed(2);
+        confBadge.className = 'text-xs font-mono px-1.5 py-0.5 rounded border ' + (item.confidence < 0.35 ? 'text-rose-700 border-rose-200 bg-rose-50' : 'text-slate-500 border-slate-200');
+      } else {
+        confBadge.textContent = '—';
+        confBadge.className = 'text-xs font-mono px-1.5 py-0.5 rounded border text-slate-500 border-slate-200';
+      }
+      const errRow = document.getElementById('retry-error-row');
+      const errPre = document.getElementById('retry-error');
+      if (item.error) {
+        errRow.classList.remove('hidden');
+        errPre.textContent = item.error;
+      } else {
+        errRow.classList.add('hidden');
+      }
+      const extRow = document.getElementById('retry-extraction-row');
+      const extPre = document.getElementById('retry-extraction-preview');
+      const extToggle = document.getElementById('retry-extraction-toggle');
+      if (item.extraction) {
+        extRow.classList.remove('hidden');
+        extPre.classList.add('hidden');
+        extPre.textContent = JSON.stringify(item.extraction, null, 2);
+        extToggle.textContent = 'Show previous extraction ▾';
+      } else {
+        extRow.classList.add('hidden');
+      }
+      document.getElementById('retry-company-name').value = '';
+      document.getElementById('retry-model').value = '';
+      document.getElementById('retry-min-confidence').value = '';
+      document.getElementById('retry-submit-btn').disabled = false;
+      document.getElementById('retry-submit-btn').textContent = 'Retry Extraction';
+      modal.classList.remove('hidden');
+    }
+
+    function closeReviewRetryDialog() {
+      document.getElementById('review-retry-modal').classList.add('hidden');
+      reviewRetryItem = null;
+    }
+
+    function toggleRetryExtractionPreview() {
+      const pre = document.getElementById('retry-extraction-preview');
+      pre.classList.toggle('hidden');
+    }
+
+    function useSavedReviewSettings() {
+      document.getElementById('retry-model').value = '';
+      document.getElementById('retry-min-confidence').value = '';
+      toast('Will use saved settings (model, URL, API key, confidence).', 'info');
+    }
+
+    async function submitReviewRetry() {
+      if (!reviewRetryItem) return;
+      const btn = document.getElementById('retry-submit-btn');
+      const companyName = document.getElementById('retry-company-name').value.trim();
+      const model = document.getElementById('retry-model').value.trim();
+      const minConfidence = document.getElementById('retry-min-confidence').value.trim();
+
+      const payload = { source_file: reviewRetryItem.source_file };
+      if (companyName) payload.company_name = companyName;
+      if (model) payload.ollama_model = model;
+      if (minConfidence !== '') {
+        const parsed = parseFloat(minConfidence);
+        if (!isNaN(parsed)) payload.minimum_confidence = parsed;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Retrying…';
       try {
-        toast('Retrying extraction…');
         const res = await fetch('/api/review/retry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source_file: sourceFile })
+          body: JSON.stringify(payload)
         });
-        const data = await res.json();
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        await res.json();
         toast('Retry complete!', 'success');
+        closeReviewRetryDialog();
         loadReviewQueue();
+        fetchStatus();
       } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Retry Extraction';
         toast(`Retry failed: ${err.message}`, 'error');
       }
     }

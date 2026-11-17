@@ -503,6 +503,12 @@ if active_section == "Review queue":
         if review.get("error"):
             st.error(f"Error: {review['error']}")
         
+        st.write("**Manual field overrides**")
+        override_company_name = st.text_input(
+            "Company name", value="",
+            help="Enter the company name manually if the extraction missed it (for example when it is missing from the page). Leave blank to use the extracted value.",
+            key="retry-company-name-input",
+        )
         st.write("**Override settings (leave blank to use saved settings):**")
         
         col1, col2 = st.columns(2)
@@ -546,9 +552,12 @@ if active_section == "Review queue":
                         st.warning("Source not found in archived. Please upload the source file manually.")
                         return
                 
-                # Process the incoming source
+                # Process the incoming source, applying any manual field overrides
+                manual_fields = {}
+                if override_company_name.strip():
+                    manual_fields["company_name"] = override_company_name.strip()
                 with st.spinner("Processing source with selected model…"):
-                    outcome = process_incoming(settings, only_names={file_name})
+                    outcome = process_incoming(settings, only_names={file_name}, manual_fields=manual_fields or None)
                 st.success(f"Retry finished: {outcome['new']} new, {outcome['merged']} merged, {outcome['review']} still need attention.")
                 hide_dialog()
                 st.rerun()
