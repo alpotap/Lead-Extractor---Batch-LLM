@@ -9,6 +9,7 @@ import re
 import shutil
 import socket
 import threading
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -30,7 +31,12 @@ from models.lead import (
     normalize_social_links,
 )
 from services.ollama import is_local_url, is_ollama_cloud_url, list_models
-from services.pipeline import configure_logging, process_incoming, start_background_scanner
+from services.pipeline import (
+    configure_logging,
+    is_scanner_running,
+    process_incoming,
+    start_background_scanner,
+)
 from services.storage import (
     company_files,
     data_root,
@@ -47,7 +53,18 @@ from services.storage import (
 )
 from services.web_capture import capture_rendered_html
 
-app = FastAPI(title="Lead Extractor", version="0.3.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start the background ingestion scanner when the FastAPI server starts."""
+    settings = _get_settings()
+    root = _get_root()
+    start_background_scanner(settings)
+    configure_logging(root).info("Background ingestion scanner started")
+    yield
+    configure_logging(root).info("Background ingestion scanner stopped")
+
+
+app = FastAPI(title="Lead Extractor", version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -212,13 +229,6 @@ def _get_crm_summaries(root: Path, company_ids: list[str]) -> dict[str, dict[str
     return _crm_summaries_cache
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    settings = _get_settings()
-    root = _get_root()
-    start_background_scanner(settings)
-
-
 @app.get("/api/status")
 def api_status() -> dict[str, Any]:
     settings = _get_settings()
@@ -255,6 +265,7 @@ def api_status() -> dict[str, Any]:
         "lan_port": 8502,
         "total_companies": len(companies),
         "review_count": len(review_files),
+        "scanner_running": is_scanner_running(),
         "data_path": str(root),
     }
 
@@ -958,6 +969,36 @@ async def api_save_settings(request: Request) -> dict[str, Any]:
     save_settings(settings)
     _invalidate_caches()
     return {"status": "success", "settings": settings}
+
+
+@app.post("/api/process-incoming")
+async def api_process_incoming(request: Request) -> dict[str, Any]:
+    """Manually trigger processing of all files in the ingestion incoming folder.
+
+    Restores any review items whose sources are still in archived back to incoming,
+    then runs the extraction pipeline over everything waiting there.
+    """
+    root = _get_root()
+    settings = _get_settings()
+
+    incoming = root / "ingest" / "incoming"
+    archived = root / "ingest" / "archived"
+
+    # Re-queue any review items whose sources are still in archived so they get retried.
+    review_dir = root / "review"
+    for review_file in review_dir.glob("*.review.json"):
+        data = read_json(review_file, {})
+        if not isinstance(data, dict):
+            continue
+        source_name = str(data.get("source_file") or review_file.stem.removesuffix(".review"))
+        archived_source = archived / Path(source_name).name
+        incoming_source = incoming / Path(source_name).name
+        if archived_source.exists() and not incoming_source.exists():
+            shutil.copy2(archived_source, incoming_source)
+
+    outcome = process_incoming(settings)
+    _invalidate_caches()
+    return {"status": "success", "outcome": outcome}
 
 
 @app.post("/api/rebuild")

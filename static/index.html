@@ -80,6 +80,12 @@
             <span id="ollama-text">Checking Ollama…</span>
           </div>
 
+          <!-- Background Scanner Status Pill -->
+          <div id="scanner-pill" class="hidden sm:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border bg-slate-100 text-slate-600 border-slate-200">
+            <span class="w-2 h-2 rounded-full bg-slate-400" id="scanner-dot"></span>
+            <span id="scanner-text">Scanner…</span>
+          </div>
+
           <!-- Settings Button -->
           <button onclick="openSettingsModal()" class="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition" title="Settings">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3" stroke-width="2"/></svg>
@@ -571,6 +577,9 @@
             <button onclick="openReviewRetryDialogAll()" id="retry-all-btn" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
               Retry All
             </button>
+            <button onclick="processIncomingNow()" id="process-incoming-btn" class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-semibold transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+              Process Incoming Now
+            </button>
           </div>
         </div>
 
@@ -930,6 +939,21 @@
         } else {
           _currentLanUrl = `http://localhost:${lanPort}`;
           if (headerLanBtn) headerLanBtn.classList.add('hidden');
+        }
+
+        // Background scanner status
+        const scannerPill = document.getElementById('scanner-pill');
+        const scannerDot = document.getElementById('scanner-dot');
+        const scannerText = document.getElementById('scanner-text');
+        if (scannerPill) {
+          scannerPill.classList.remove('hidden');
+          if (data.scanner_running) {
+            scannerDot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+            scannerText.textContent = 'Background scanner active';
+          } else {
+            scannerDot.className = 'w-2 h-2 rounded-full bg-amber-500';
+            scannerText.textContent = 'Scanner not running';
+          }
         }
 
       } catch (e) {
@@ -1901,6 +1925,35 @@
         fetchStatus();
       } catch (err) {
         toast(`Retry all failed: ${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
+    }
+
+    async function processIncomingNow() {
+      const btn = document.getElementById('process-incoming-btn');
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span>Processing…</span>';
+      try {
+        const res = await fetch('/api/process-incoming', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        const o = data.outcome || {};
+        toast(`Incoming processed: ${o.new || 0} new, ${o.merged || 0} merged, ${o.review || 0} sent to review, ${o.errors || 0} errors.`, 'success');
+        loadReviewQueue();
+        fetchStatus();
+        loadCompanies(1);
+      } catch (err) {
+        toast(`Processing failed: ${err.message}`, 'error');
       } finally {
         btn.disabled = false;
         btn.innerHTML = originalHtml;

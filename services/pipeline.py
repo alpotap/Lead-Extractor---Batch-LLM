@@ -31,6 +31,11 @@ _scanner_lock = threading.Lock()
 _scanner_started = False
 
 
+def is_scanner_running() -> bool:
+    """Return whether the background ingestion scanner has been started."""
+    return _scanner_started
+
+
 class _VisibleHTMLText(HTMLParser):
     """Extract readable page text while retaining link targets for inspection."""
 
