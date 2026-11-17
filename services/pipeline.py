@@ -30,10 +30,55 @@ SUPPORTED_EXTENSIONS = {".txt", ".html", ".htm", ".md"}
 _scanner_lock = threading.Lock()
 _scanner_started = False
 
+# Guards the extraction run itself so the periodic scanner and manual
+# triggers never process the same files at the same time.
+_processing_lock = threading.Lock()
+# Tracks the current/last extraction run so the UI can show live progress.
+_job_lock = threading.Lock()
+_processing_job: dict[str, Any] | None = None
+
 
 def is_scanner_running() -> bool:
     """Return whether the background ingestion scanner has been started."""
     return _scanner_started
+
+
+def get_processing_job() -> dict[str, Any] | None:
+    """Return a snapshot of the current/last extraction run for progress reporting."""
+    with _job_lock:
+        return dict(_processing_job) if _processing_job else None
+
+
+def _start_processing_job(total_files: int) -> None:
+    global _processing_job
+    with _job_lock:
+        _processing_job = {
+            "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
+            "total": total_files,
+            "processed": 0,
+            "current": "",
+            "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "finished": False,
+            "result": None,
+        }
+
+
+def _update_processing_job(current_file: str, processed: int, total_files: int) -> None:
+    with _job_lock:
+        job = _processing_job
+        if job is not None:
+            job["current"] = current_file
+            job["processed"] = processed
+            job["total"] = total_files
+
+
+def _finish_processing_job(counts: dict[str, int]) -> None:
+    with _job_lock:
+        job = _processing_job
+        if job is not None:
+            job["finished"] = True
+            job["current"] = ""
+            job["result"] = dict(counts)
 
 
 class _VisibleHTMLText(HTMLParser):
@@ -221,6 +266,25 @@ def process_incoming(
     root = data_root(settings)
     logger = configure_logging(root)
     counts = {"processed": 0, "review": 0, "errors": 0, "merged": 0, "new": 0}
+    if not _processing_lock.acquire(blocking=False):
+        # Another run (scanner or manual trigger) is already extracting.
+        logger.info("Extraction already in progress; skipping this processing run")
+        counts["skipped"] = True
+        return counts
+    try:
+        return _process_incoming_locked(settings, only_names, manual_fields, counts, logger)
+    finally:
+        _processing_lock.release()
+
+
+def _process_incoming_locked(
+    settings: dict[str, Any],
+    only_names: set[str] | None,
+    manual_fields: dict[str, Any] | None,
+    counts: dict[str, int],
+    logger: logging.Logger,
+) -> dict[str, int]:
+    root = data_root(settings)
     cloud_ollama = is_ollama_cloud_url(settings["ollama_url"])
     manual_fields = manual_fields or {}
     manual_company_name = str(manual_fields.get("company_name") or "").strip()
@@ -236,91 +300,101 @@ def process_incoming(
             available_models = []
             model_check_error = str(exc)
     incoming = root / "ingest" / "incoming"
-    for source in sorted(incoming.iterdir()):
-        if not source.is_file() or source.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            continue
-        if only_names is not None and source.name not in only_names:
-            continue
-        extracted_path = root / "extracted" / f"{source.stem}.extracted.json"
-        review_path = root / "review" / f"{source.stem}.review.json"
-        selected_model = settings.get("selected_model", "")
-        try:
-            prepared_path: Path | None = None
-            if source.suffix.lower() in {".html", ".htm"}:
-                text, prepared_path = prepare_html(source, root / "ingest" / "parsed")
-                logger.info(
-                    "Prepared HTML source=%s parsed_file=%s source_bytes=%d prepared_chars=%d",
-                    source.name, prepared_path.name, source.stat().st_size, len(text),
+    pending_sources = [
+        source for source in sorted(incoming.iterdir())
+        if source.is_file()
+        and source.suffix.lower() in SUPPORTED_EXTENSIONS
+        and (only_names is None or source.name in only_names)
+    ]
+    total_files = len(pending_sources)
+    if total_files:
+        _start_processing_job(total_files)
+    try:
+        for index, source in enumerate(pending_sources, start=1):
+            _update_processing_job(source.name, index - 1, total_files)
+            extracted_path = root / "extracted" / f"{source.stem}.extracted.json"
+            review_path = root / "review" / f"{source.stem}.review.json"
+            selected_model = settings.get("selected_model", "")
+            try:
+                prepared_path: Path | None = None
+                if source.suffix.lower() in {".html", ".htm"}:
+                    text, prepared_path = prepare_html(source, root / "ingest" / "parsed")
+                    logger.info(
+                        "Prepared HTML source=%s parsed_file=%s source_bytes=%d prepared_chars=%d",
+                        source.name, prepared_path.name, source.stat().st_size, len(text),
+                    )
+                else:
+                    # Plain text and Markdown keep their existing byte-to-text path.
+                    text = source.read_text(encoding="utf-8", errors="replace")
+                if model_check_error and not openai_compat:
+                    raise ValueError(f"Could not verify local Ollama models: {model_check_error}")
+                if not selected_model:
+                    raise ValueError("Enter and save an Ollama model before processing")
+                if not cloud_ollama and not openai_compat and selected_model not in available_models:
+                    raise ValueError("Select and save an installed Ollama model before processing")
+                start_time = time.perf_counter()
+                logger.info("Extraction started source=%s model=%s source_bytes=%d", source.name, selected_model, source.stat().st_size)
+                category_taxonomy = load_category_taxonomy(root)
+                raw = extract_lead(
+                    settings["ollama_url"],
+                    selected_model,
+                    text,
+                    source_file=source.name,
+                    raw_log_path=root / "logs" / "llm_raw.jsonl",
+                    raw_log_max_bytes=int(settings.get("raw_llm_log_max_bytes", 10_000_000)),
+                    raw_log_backups=int(settings.get("raw_llm_log_backups", 5)),
+                    category_taxonomy=category_taxonomy,
+                    api_key=str(settings.get("ollama_api_key", "")),
+                    company_hint=manual_company_name,
                 )
-            else:
-                # Plain text and Markdown keep their existing byte-to-text path.
-                text = source.read_text(encoding="utf-8", errors="replace")
-            if model_check_error and not openai_compat:
-                raise ValueError(f"Could not verify local Ollama models: {model_check_error}")
-            if not selected_model:
-                raise ValueError("Enter and save an Ollama model before processing")
-            if not cloud_ollama and not openai_compat and selected_model not in available_models:
-                raise ValueError("Select and save an installed Ollama model before processing")
-            start_time = time.perf_counter()
-            logger.info("Extraction started source=%s model=%s source_bytes=%d", source.name, selected_model, source.stat().st_size)
-            category_taxonomy = load_category_taxonomy(root)
-            raw = extract_lead(
-                settings["ollama_url"],
-                selected_model,
-                text,
-                source_file=source.name,
-                raw_log_path=root / "logs" / "llm_raw.jsonl",
-                raw_log_max_bytes=int(settings.get("raw_llm_log_max_bytes", 10_000_000)),
-                raw_log_backups=int(settings.get("raw_llm_log_backups", 5)),
-                category_taxonomy=category_taxonomy,
-                api_key=str(settings.get("ollama_api_key", "")),
-                company_hint=manual_company_name,
-            )
-            record = _normalize_extraction(raw, category_taxonomy)
-            confidence = _confidence(record)
-            record["_source_file"] = source.name
-            record["_confidence"] = confidence
-            record["_model"] = selected_model
-            record["_processed_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
-            if prepared_path is not None:
-                record["_prepared_file"] = str(prepared_path.relative_to(root))
-            if not record["company_name"] or confidence < float(settings.get("minimum_extraction_confidence", 0.35)):
+                record = _normalize_extraction(raw, category_taxonomy)
+                confidence = _confidence(record)
+                record["_source_file"] = source.name
+                record["_confidence"] = confidence
+                record["_model"] = selected_model
+                record["_processed_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                if prepared_path is not None:
+                    record["_prepared_file"] = str(prepared_path.relative_to(root))
+                if not record["company_name"] or confidence < float(settings.get("minimum_extraction_confidence", 0.35)):
+                    write_json(review_path, {
+                        "reason": "missing_company_name" if not record["company_name"] else "low_confidence",
+                        "source_file": source.name,
+                        "created_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                        "confidence": confidence,
+                        "extraction": record,
+                    })
+                    counts["review"] += 1
+                    logger.warning("Extraction sent to review: %s (confidence %.2f)", source.name, confidence)
+                else:
+                    write_json(extracted_path, record)
+                    company_id, score, was_merged, candidates = merge_company(root, record, source.name, settings["duplicate_weights"])
+                    review_path.unlink(missing_ok=True)
+                    counts["merged" if was_merged else "new"] += 1
+                    logger.info(
+                        "Duplicate decision source=%s model=%s company=%s best_score=%d merged=%s elapsed_seconds=%.2f candidates=%s",
+                        source.name, selected_model, company_id, score, was_merged, time.perf_counter() - start_time,
+                        json.dumps(candidates, ensure_ascii=False, separators=(",", ":")),
+                    )
+                counts["processed"] += 1
+                _archive(source, root / "ingest" / "archived")
+            except Exception as exc:  # Keep failures visible and preserve the original source.
+                counts["errors"] += 1
+                counts["review"] += 1
                 write_json(review_path, {
-                    "reason": "missing_company_name" if not record["company_name"] else "low_confidence",
+                    "reason": "processing_error",
+                    "error": str(exc),
                     "source_file": source.name,
                     "created_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                    "confidence": confidence,
-                    "extraction": record,
                 })
-                counts["review"] += 1
-                logger.warning("Extraction sent to review: %s (confidence %.2f)", source.name, confidence)
-            else:
-                write_json(extracted_path, record)
-                company_id, score, was_merged, candidates = merge_company(root, record, source.name, settings["duplicate_weights"])
-                review_path.unlink(missing_ok=True)
-                counts["merged" if was_merged else "new"] += 1
-                logger.info(
-                    "Duplicate decision source=%s model=%s company=%s best_score=%d merged=%s elapsed_seconds=%.2f candidates=%s",
-                    source.name, selected_model, company_id, score, was_merged, time.perf_counter() - start_time,
-                    json.dumps(candidates, ensure_ascii=False, separators=(",", ":")),
-                )
-            counts["processed"] += 1
-            _archive(source, root / "ingest" / "archived")
-        except Exception as exc:  # Keep failures visible and preserve the original source.
-            counts["errors"] += 1
-            counts["review"] += 1
-            write_json(review_path, {
-                "reason": "processing_error",
-                "error": str(exc),
-                "source_file": source.name,
-                "created_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
-            })
-            logger.exception("Failed to process source=%s model=%s", source.name, selected_model)
-            # Extraction errors should not block later incoming files.
-            try:
-                _archive(source, root / "ingest" / "archived")
-            except OSError:
-                logger.exception("Could not archive %s", source.name)
+                logger.exception("Failed to process source=%s model=%s", source.name, selected_model)
+                # Extraction errors should not block later incoming files.
+                try:
+                    _archive(source, root / "ingest" / "archived")
+                except OSError:
+                    logger.exception("Could not archive %s", source.name)
+    finally:
+        if total_files:
+            _finish_processing_job(counts)
     return counts
 
 

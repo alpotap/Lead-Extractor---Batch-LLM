@@ -9,6 +9,7 @@ import re
 import shutil
 import socket
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -32,7 +33,9 @@ from models.lead import (
 )
 from services.ollama import is_local_url, is_ollama_cloud_url, list_models
 from services.pipeline import (
+    SUPPORTED_EXTENSIONS,
     configure_logging,
+    get_processing_job,
     is_scanner_running,
     process_incoming,
     start_background_scanner,
@@ -94,6 +97,37 @@ def _get_settings() -> dict[str, Any]:
 
 def _get_root() -> Path:
     return data_root(_get_settings())
+
+
+def _processing_busy() -> bool:
+    job = get_processing_job()
+    return bool(job and not job.get("finished"))
+
+
+def _launch_processing(
+    settings: dict[str, Any],
+    only_names: set[str] | None,
+    manual_fields: dict[str, Any] | None,
+) -> None:
+    """Run the extraction pipeline in a daemon thread so HTTP requests return immediately.
+
+    The UI stays responsive and can be closed or refreshed while extraction runs;
+    progress is exposed through /api/processing-status.
+    """
+
+    def runner() -> None:
+        # If the periodic scanner holds the processing lock, wait for it rather
+        # than dropping this request, so manual retries are never silently lost.
+        for _ in range(150):  # up to ~5 minutes of waiting
+            outcome = process_incoming(settings, only_names=only_names, manual_fields=manual_fields)
+            if not outcome.get("skipped"):
+                return
+            time.sleep(2)
+        configure_logging(data_root(settings)).warning(
+            "Manual processing job gave up waiting for the running extraction to finish"
+        )
+
+    threading.Thread(target=runner, name="lead-manual-processing", daemon=True).start()
 
 
 def _lan_ip() -> str:
@@ -267,6 +301,26 @@ def api_status() -> dict[str, Any]:
         "review_count": len(review_files),
         "scanner_running": is_scanner_running(),
         "data_path": str(root),
+    }
+
+
+@app.get("/api/processing-status")
+def api_processing_status() -> dict[str, Any]:
+    """Live processing progress and pending-file counts for the UI progress bar."""
+    root = _get_root()
+    incoming = root / "ingest" / "incoming"
+    incoming_count = 0
+    if incoming.exists():
+        incoming_count = sum(
+            1 for p in incoming.iterdir()
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+        )
+    review_count = len(list((root / "review").glob("*.review.json")))
+    return {
+        "incoming_count": incoming_count,
+        "review_count": review_count,
+        "scanner_running": is_scanner_running(),
+        "job": get_processing_job(),
     }
 
 
