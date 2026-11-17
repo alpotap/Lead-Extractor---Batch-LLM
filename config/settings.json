@@ -1,7 +1,7 @@
 {
   "data_path": "~/LeadData",
-  "ollama_url": "http://localhost:11434",
-  "selected_model": "gemma4:e2b",
+  "ollama_url": "https://integrate.api.nvidia.com/v1",
+  "selected_model": "nvidia/nemotron-3.5-lightning-30b-a3b",
   "scan_interval_minutes": 1,
   "minimum_extraction_confidence": 0.35,
   "raw_llm_log_max_bytes": 10000000,
@@ -15,5 +15,6 @@
     "company_name": 30,
     "city": 20
   },
-  "custom_statuses": []
+  "custom_statuses": [],
+  "page_size": 50
 }

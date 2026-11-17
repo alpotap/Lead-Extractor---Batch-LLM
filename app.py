@@ -24,7 +24,7 @@ from models.lead import (
     normalize_social_links,
     EXTRACTION_TEMPLATE,
 )
-from services.ollama import is_local_url, is_ollama_cloud_url, list_models
+from services.ollama import is_local_url, is_ollama_cloud_url, is_openai_compatible_url, list_models
 from services.pipeline import configure_logging, process_incoming, start_background_scanner
 from services.storage import (
     company_files, data_root, load_category_taxonomy, load_deleted_default_categories, load_companies, load_settings, read_json,
@@ -244,6 +244,7 @@ with st.sidebar:
         )
         st.caption("Add API key for Cloud hosted Ollama, leave empty for self hosted.")
     cloud_ollama = is_ollama_cloud_url(ollama_url)
+    openai_compat = is_openai_compatible_url(ollama_url)
     if cloud_ollama:
         selected_model = st.text_input(
             "Ollama Cloud model", value=str(settings.get("selected_model", "")),
@@ -251,21 +252,41 @@ with st.sidebar:
             help="Enter the exact model name supported by your Ollama Cloud account.",
         )
     else:
+        model_options = []
         try:
             available_models = list_models(ollama_url, ollama_api_key)
-            model_options = available_models or ([settings["selected_model"]] if settings["selected_model"] else [])
+            model_options = available_models or []
             if available_models:
-                st.caption(f"{len(available_models)} Ollama model(s) available")
+                st.caption(f"{len(available_models)} model(s) available")
+            elif openai_compat:
+                st.info("Enter a model name manually below (model list not detected).")
             else:
-                st.warning("No Ollama models found. The lead list and manual editing still work.")
+                st.warning("No Ollama models found. Enter a model name manually below.")
         except Exception as exc:
-            model_options = [settings["selected_model"]] if settings["selected_model"] else []
-            st.warning(f"Ollama is unavailable: {exc}")
-        selected_index = model_options.index(settings["selected_model"]) if settings["selected_model"] in model_options else (0 if model_options else None)
-        selected_model = st.selectbox(
-            "Extraction model", options=model_options, index=selected_index,
-            placeholder="No model installed", key="model_choice", on_change=_save_model_selection,
+            if openai_compat:
+                st.info("Enter a model name manually below (model list not detected).")
+            else:
+                st.warning(f"Ollama is unavailable: {exc}")
+        
+        # Dropdown for detected models
+        detected_selected = None
+        if model_options:
+            current_sel = settings.get("selected_model", "")
+            det_idx = model_options.index(current_sel) if current_sel in model_options else None
+            detected_selected = st.selectbox(
+                "Extraction model (detected)", options=model_options, index=det_idx,
+                placeholder="Select a detected model", key="model_choice_detected",
+            )
+        
+        # Manual text input for any model name
+        manual_model = st.text_input(
+            "Extraction model (manual)", value=str(settings.get("selected_model", "")),
+            placeholder="e.g. gpt-4o, gemma2:9b, llama3.1", key="model_choice_manual",
+            help="Type or paste the exact model name. Overrides dropdown selection if set.",
         )
+        
+        # Prefer manual input if provided, otherwise use dropdown selection
+        selected_model = manual_model.strip() if manual_model.strip() else (detected_selected or "")
     if st.button("Save setup", use_container_width=True):
         settings["data_path"] = data_path
         settings["ollama_url"] = ollama_url.rstrip("/")
@@ -473,6 +494,69 @@ if active_section == "Review queue":
     review_files = sorted(review_dir.glob("*.review.json"), key=lambda path: path.stat().st_mtime, reverse=True)
     st.subheader("Items that need attention")
     st.caption("Dismiss anything you no longer need to act on. Dismissed items are kept out of this list and can be viewed below.")
+    
+    # Retry dialog for manual parameter input
+    @st.dialog("Retry Processing")
+    def retry_dialog(review_file: Path, review: dict[str, Any], source_name: str):
+        st.write(f"**Source:** {source_name}")
+        st.write(f"**Reason:** {review.get('reason', 'needs review')}")
+        if review.get("error"):
+            st.error(f"Error: {review['error']}")
+        
+        st.write("**Override settings (leave blank to use saved settings):**")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            override_model = st.text_input("Ollama model", value=str(settings.get("selected_model", "")), key="retry-model-input")
+            override_url = st.text_input("Ollama URL", value=str(settings.get("ollama_url", "http://localhost:11434")), key="retry-url-input")
+        with col2:
+            override_api_key = st.text_input("Ollama API key", value=str(settings.get("ollama_api_key", "")), type="password", key="retry-api-key-input")
+            override_confidence = st.number_input("Minimum confidence", value=float(settings.get("minimum_extraction_confidence", 0.35)), min_value=0.0, max_value=1.0, key="retry-confidence-input")
+        
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("Retry", type="primary", use_container_width=True):
+                # Update settings with overrides
+                settings["data_path"] = str(root)
+                settings["ollama_url"] = override_url.rstrip("/")
+                settings["selected_model"] = str(override_model or "").strip()
+                settings["ollama_api_key"] = str(override_api_key or "").strip()
+                settings["minimum_extraction_confidence"] = str(override_confidence)
+                save_ollama_api_key(str(override_api_key or "").strip())
+                save_settings(settings)
+                
+                # Move file from review/archived back to incoming
+                file_name = Path(source_name).name
+                archived_source = root / "ingest" / "archived" / file_name
+                incoming_source = root / "ingest" / "incoming" / file_name
+                
+                # Remove incoming if exists (fresh start)
+                if incoming_source.exists():
+                    incoming_source.unlink()
+                
+                # Copy from archived if it exists; otherwise copy from review's source
+                if archived_source.exists():
+                    shutil.copy2(archived_source, incoming_source)
+                elif review.get("source_file"):
+                    src_path = root / "ingest" / "archived" / Path(review["source_file"]).name
+                    if src_path.exists():
+                        shutil.copy2(src_path, incoming_source)
+                    else:
+                        # Copy the review file's associated source if findable
+                        st.warning("Source not found in archived. Please upload the source file manually.")
+                        return
+                
+                # Process the incoming source
+                with st.spinner("Processing source with selected model…"):
+                    outcome = process_incoming(settings, only_names={file_name})
+                st.success(f"Retry finished: {outcome['new']} new, {outcome['merged']} merged, {outcome['review']} still need attention.")
+                hide_dialog()
+                st.rerun()
+        with col_b:
+            if st.button("Cancel", use_container_width=True):
+                hide_dialog()
+                st.rerun()
+    
     if review_files:
         for review_file in review_files:
             review = read_json(review_file, {})
@@ -501,25 +585,32 @@ if active_section == "Review queue":
                 if review.get("extraction"):
                     st.json(review["extraction"])
 
-                action_col, dismiss_col = st.columns([2, 1])
                 file_name = Path(source_name).name
                 archived_source = root / "ingest" / "archived" / file_name
                 incoming_source = root / "ingest" / "incoming" / file_name
-                with action_col:
-                    if st.button("Retry with selected model", key=f"retry-{review_file.stem}", disabled=not archived_source.exists()):
+                
+                with st.expander("Actions"):
+                    # Standard retry with saved settings
+                    if st.button("Retry with saved model", key=f"retry-saved-{review_file.stem}"):
                         settings["data_path"] = str(root)
                         settings["ollama_url"] = ollama_url.rstrip("/")
                         settings["selected_model"] = str(selected_model or "").strip()
                         settings["ollama_api_key"] = ollama_api_key
                         save_ollama_api_key(ollama_api_key)
                         save_settings(settings)
+                        
                         if not incoming_source.exists():
                             shutil.copy2(archived_source, incoming_source)
                         with st.spinner("Retrying source…"):
                             outcome = process_incoming(settings, only_names={file_name})
                         st.success(f"Retry finished: {outcome['new']} new, {outcome['merged']} merged, {outcome['review']} still need attention.")
                         st.rerun()
-                with dismiss_col:
+                    
+                    # Manual retry with dialog
+                    if st.button("Retry with manual settings", key=f"retry-manual-{review_file.stem}"):
+                        retry_dialog(review_file, review, source_name)
+                    
+                    # Dismiss
                     if st.button("Dismiss", key=f"dismiss-{review_file.stem}"):
                         _dismiss_review(review_file)
                         st.rerun()

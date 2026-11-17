@@ -23,7 +23,7 @@ from models.lead import (
     normalize_opening_hours,
     normalize_social_links,
 )
-from services.ollama import extract_lead, is_ollama_cloud_url, list_models
+from services.ollama import extract_lead, is_ollama_cloud_url, is_openai_compatible_url, list_models
 from services.storage import data_root, load_category_taxonomy, merge_company, write_json
 
 SUPPORTED_EXTENSIONS = {".txt", ".html", ".htm", ".md"}
@@ -213,7 +213,8 @@ def process_incoming(settings: dict[str, Any], only_names: set[str] | None = Non
     logger = configure_logging(root)
     counts = {"processed": 0, "review": 0, "errors": 0, "merged": 0, "new": 0}
     cloud_ollama = is_ollama_cloud_url(settings["ollama_url"])
-    if cloud_ollama:
+    openai_compat = is_openai_compatible_url(settings["ollama_url"])
+    if cloud_ollama or openai_compat:
         available_models = []
         model_check_error = ""
     else:
@@ -243,11 +244,11 @@ def process_incoming(settings: dict[str, Any], only_names: set[str] | None = Non
             else:
                 # Plain text and Markdown keep their existing byte-to-text path.
                 text = source.read_text(encoding="utf-8", errors="replace")
-            if model_check_error:
+            if model_check_error and not openai_compat:
                 raise ValueError(f"Could not verify local Ollama models: {model_check_error}")
             if not selected_model:
                 raise ValueError("Enter and save an Ollama model before processing")
-            if not cloud_ollama and selected_model not in available_models:
+            if not cloud_ollama and not openai_compat and selected_model not in available_models:
                 raise ValueError("Select and save an installed Ollama model before processing")
             start_time = time.perf_counter()
             logger.info("Extraction started source=%s model=%s source_bytes=%d", source.name, selected_model, source.stat().st_size)

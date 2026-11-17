@@ -632,6 +632,9 @@
           </div>
           <select id="settings-model-select" class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:ring-brand-500 font-semibold"></select>
           <div id="test-ollama-status" class="text-xs text-slate-500"></div>
+          <!-- Manual model text input -->
+          <input type="text" id="settings-model-manual" placeholder="e.g. gpt-4o, gemma2:9b, llama3.1" class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:ring-brand-500 bg-white font-mono mt-2">
+          <p class="text-xs text-slate-500 mt-1">Type or paste a model name manually. This overrides the dropdown selection if set.</p>
         </div>
 
         <!-- Pagination Preference -->
@@ -1838,6 +1841,10 @@
         const cloudModelInput = document.getElementById('settings-cloud-model-input');
         if (cloudModelInput) cloudModelInput.value = data.selected_model || '';
 
+        // Manual model text input
+        const modelManualInput = document.getElementById('settings-model-manual');
+        if (modelManualInput) modelManualInput.value = data.selected_model || '';
+
         // LAN Network Access section
         const lanIp = data.lan_ip || '';
         const lanPort = data.lan_port || 8502;
@@ -1868,9 +1875,18 @@
 
     async function saveAppSettings() {
       const isCloud = !document.getElementById('settings-cloud-model-container').classList.contains('hidden');
-      const selectedModel = isCloud
-        ? (document.getElementById('settings-cloud-model-input')?.value.trim() || '')
-        : (document.getElementById('settings-model-select')?.value || '');
+      
+      // Manual model text input takes priority if set
+      const modelManualInput = document.getElementById('settings-model-manual')?.value.trim() || '';
+      
+      let selectedModel = '';
+      if (isCloud) {
+        selectedModel = document.getElementById('settings-cloud-model-input')?.value.trim() || '';
+      } else if (modelManualInput) {
+        selectedModel = modelManualInput;
+      } else {
+        selectedModel = document.getElementById('settings-model-select')?.value || '';
+      }
 
       const newPageSize = parseInt(document.getElementById('settings-page-size')?.value || String(currentPageSize));
 

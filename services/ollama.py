@@ -31,7 +31,7 @@ SOURCE_CHUNK_CHARS = 5500
 SOURCE_CHUNK_OVERLAP_CHARS = 800
 
 _RAW_LOGGERS: dict[str, logging.Logger] = {}
-_RAW_LOGGERS_LOCK = threading.Lock()
+_RAW_LOGGERS_LOCK = threading.Lock
 
 
 def _raw_log_event(
@@ -88,6 +88,30 @@ def is_ollama_cloud_url(url: str) -> bool:
     )
 
 
+def is_openai_url(url: str) -> bool:
+    """Identify OpenAI's API endpoint."""
+    try:
+        parsed = urlparse(url.strip())
+        hostname = (parsed.hostname or "").casefold()
+        return hostname == "api.openai.com" and parsed.scheme == "https"
+    except ValueError:
+        return False
+
+
+def is_openai_compatible_url(url: str) -> bool:
+    """Identify any OpenAI-compatible API endpoint (OpenAI, NVIDIA NIM, etc.)."""
+    try:
+        parsed = urlparse(url.strip())
+        hostname = (parsed.hostname or "").casefold()
+        scheme = parsed.scheme.casefold()
+        return scheme == "https" and hostname not in (
+            "localhost",
+            "ollama.com",
+        ) and not hostname.startswith("127.")
+    except ValueError:
+        return False
+
+
 def _request(
     url: str, payload: dict[str, Any] | None = None, timeout: int = 30, api_key: str = "",
 ) -> Any:
@@ -118,25 +142,38 @@ def _generate_json(
     raw_log_backups: int,
     api_key: str = "",
 ) -> dict[str, Any]:
-    request_payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
-        # Full extraction can contain many contacts and source details. If the
-        # response is truncated, retry this request with a doubled output cap.
-        "options": {
+    """Call either OpenAI-compatible or Ollama generate endpoint and return parsed JSON."""
+    openai = is_openai_compatible_url(base_url)
+
+    if openai:
+        base = base_url.rstrip("/")
+        # base_url already includes /v1 (e.g. https://api.openai.com/v1 or
+        # https://integrate.api.nvidia.com/v1); do not double-append /v1.
+        chat_url = base + "/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
-            "num_predict": DEFAULT_NUM_PREDICT,
-            # Ollama's default context is commonly 4096. Leave room for both
-            # this prompt and the full output budget, growing it on retries.
-            "num_ctx": max(8192, DEFAULT_NUM_PREDICT + 4096),
-        },
-    }
+            "response_format": {"type": "json_object"},
+        }
+    else:
+        chat_url = base_url.rstrip("/") + "/api/generate"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+            "options": {
+                "temperature": 0,
+                "num_predict": DEFAULT_NUM_PREDICT,
+                "num_ctx": max(8192, DEFAULT_NUM_PREDICT + 4096),
+            },
+        }
+
     while True:
         request_time = datetime.now().astimezone().isoformat(timespec="seconds")
         try:
-            result = _request(base_url.rstrip("/") + "/api/generate", request_payload, timeout=300, api_key=api_key)
+            result = _request(chat_url, payload, timeout=300, api_key=api_key)
         except Exception as exc:
             error_body = ""
             if hasattr(exc, "read"):
@@ -145,46 +182,57 @@ def _generate_json(
                 except Exception:
                     error_body = ""
             _raw_log_event(raw_log_path, {
-                "timestamp": request_time, "event": "ollama_error", "task": task,
+                "timestamp": request_time, "event": "extraction_error", "task": task,
                 "source_file": source_file, "model": model, "segment": segment,
                 "segment_count": segment_count, "prompt": prompt,
-                "request": {key: value for key, value in request_payload.items() if key != "prompt"},
+                "request": {"url": chat_url, "payload": {k: v for k, v in payload.items() if k != "messages"}},
                 "error": f"{type(exc).__name__}: {exc}", "error_body": error_body,
             }, raw_log_max_bytes, raw_log_backups)
             raise
         _raw_log_event(raw_log_path, {
-            "timestamp": request_time, "event": "ollama_response", "task": task,
+            "timestamp": request_time, "event": "extraction_response", "task": task,
             "source_file": source_file, "model": model, "segment": segment,
             "segment_count": segment_count, "prompt": prompt,
-            "request": {key: value for key, value in request_payload.items() if key != "prompt"},
-            "response_text": result.get("response", ""),
-            "response_metadata": {key: value for key, value in result.items() if key != "response"},
+            "request": {"url": chat_url, "payload": {k: v for k, v in payload.items() if k != "messages"}},
+            "response_text": result.get("choices", [{}])[0].get("message", {}).get("content", "") if openai else result.get("response", ""),
+            "response_metadata": {
+                key: value for k, v in result.items()
+                if k not in ("id", "object", "created", "model", "choices")
+                and not (isinstance(v, (str, int, float, bool, type(None))) or isinstance(v, list))
+            } if not openai else {},
         }, raw_log_max_bytes, raw_log_backups)
-        done_reason = str(result.get("done_reason") or "").strip().lower()
-        if done_reason != "length":
-            break
-        current_limit = int(request_payload["options"]["num_predict"])
-        if current_limit >= MAX_NUM_PREDICT:
-            raise ValueError(
-                f"Ollama truncated {task} segment {segment}/{segment_count} at the maximum "
-                f"output limit ({current_limit} tokens); the response was rejected before any extraction could be saved"
-            )
-        next_limit = min(current_limit * 2, MAX_NUM_PREDICT)
-        request_payload["options"]["num_predict"] = next_limit
-        request_payload["options"]["num_ctx"] = max(8192, next_limit + 4096)
-        logger = logging.getLogger(__name__)
-        logger.warning(
-            "Ollama truncated %s segment %d/%d at %d output tokens; retrying with %d",
-            task, segment, segment_count, current_limit, next_limit,
-        )
-    response = str(result.get("response", "")).strip()
+
+        if openai:
+            choice = result.get("choices", [{}])[0]
+            delta = choice.get("delta", {}) or {}
+            content = choice.get("message", {}).get("content", "")
+            done_reason = delta.get("role") or choice.get("finish_reason")
+            if done_reason == "stop":
+                break
+            response = content.strip()
+        else:
+            response = str(result.get("response", "")).strip()
+            done_reason = str(result.get("done_reason") or "").strip().lower()
+            if done_reason != "length":
+                break
+            current_limit = int(payload["options"]["num_predict"])
+            if current_limit >= MAX_NUM_PREDICT:
+                raise ValueError(
+                    f"Ollama truncated {task} segment {segment}/{segment_count} at the maximum "
+                    f"output limit ({current_limit} tokens); the response was rejected before any extraction could be saved"
+                )
+            next_limit = min(current_limit * 2, MAX_NUM_PREDICT)
+            payload["options"]["num_predict"] = next_limit
+            payload["options"]["num_ctx"] = max(8192, next_limit + 4096)
+
+    if openai:
+        response = result.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not response:
         raise ValueError(
-            f"Ollama returned an empty response for {task} segment {segment}/{segment_count} "
-            f"({done_reason or 'no completion reason'}); the response was rejected"
+            f"API returned an empty response for {task} segment {segment}/{segment_count} "
+            f"(finish_reason={done_reason or 'no completion reason'}); the response was rejected"
         )
-    # Some cloud models wrap valid JSON in Markdown fences despite format=json.
-    # Accept that common variation, plus a short preamble around one JSON object.
+    # Accept JSON fences or raw JSON.
     unfenced = re.sub(r"^\s*```(?:json)?\s*", "", response, flags=re.IGNORECASE)
     unfenced = re.sub(r"\s*```\s*$", "", unfenced)
     try:
@@ -196,30 +244,13 @@ def _generate_json(
                 extracted = json.loads(object_match.group(0))
             except json.JSONDecodeError:
                 reason = done_reason or "no completion reason"
-                raise ValueError(f"Ollama returned invalid JSON for {task} segment {segment}/{segment_count} ({reason}): {exc}") from exc
+                raise ValueError(f"API returned invalid JSON for {task} segment {segment}/{segment_count} ({reason}): {exc}") from exc
         else:
             reason = done_reason or "no completion reason"
-            raise ValueError(f"Ollama returned invalid JSON for {task} segment {segment}/{segment_count} ({reason}): {exc}") from exc
+            raise ValueError(f"API returned invalid JSON for {task} segment {segment}/{segment_count} ({reason}): {exc}") from exc
     if not isinstance(extracted, dict):
-        raise ValueError(f"Ollama response for {task} segment {segment}/{segment_count} was not a JSON object")
+        raise ValueError(f"API response for {task} segment {segment}/{segment_count} was not a JSON object")
     return extracted
-
-
-def list_models(base_url: str, api_key: str = "") -> list[str]:
-    # Match the familiar Ollama CLI workflow when its executable is installed.
-    if is_local_url(base_url) and shutil.which("ollama"):
-        result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=10, check=True)
-        models = []
-        for line in result.stdout.splitlines()[1:]:
-            columns = line.split()
-            if columns:
-                models.append(columns[0])
-        return sorted(models)
-    # The local API remains a useful fallback when Ollama is available on PATH
-    # only through a service wrapper or a nonstandard installation.
-    response = _request(base_url.rstrip("/") + "/api/tags", timeout=5, api_key=api_key)
-    return sorted(model["name"] for model in response.get("models", []) if model.get("name"))
-
 
 def extract_lead(
     base_url: str,
@@ -233,6 +264,7 @@ def extract_lead(
     category_taxonomy: dict[str, list[str]] | None = None,
     api_key: str = "",
 ) -> dict[str, Any]:
+    """Extract lead information from source text using the configured AI API."""
     schema = json.dumps(EXTRACTION_SCHEMA, ensure_ascii=False, indent=2)
     # Keep prompts bounded, but carry nearby text across boundaries so a name,
     # heading, or contact detail is less likely to be isolated in one segment.
@@ -350,3 +382,27 @@ SOURCE TEXT:
                 source_file, exc,
             )
     return combined
+
+
+def list_models(base_url: str, api_key: str = '') -> list[str]:
+    # Match the familiar Ollama CLI workflow when its executable is installed.
+    if is_local_url(base_url) and shutil.which('ollama'):
+        import subprocess
+        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, timeout=10, check=True)
+        models = []
+        for line in result.stdout.splitlines()[1:]:
+            columns = line.split()
+            if columns:
+                models.append(columns[0])
+        return sorted(models)
+
+    # OpenAI-compatible: list models from /models (base_url already includes /v1)
+    if is_openai_compatible_url(base_url):
+        base = base_url.rstrip("/")
+        response = _request(base + "/models", timeout=5, api_key=api_key)
+        return sorted(model["id"] for model in response.get("data", []) if model.get("id"))
+
+    # The local API remains a useful fallback when Ollama is available on PATH
+    # only through a service wrapper or a nonstandard installation.
+    response = _request(base_url.rstrip('/') + '/api/tags', timeout=5, api_key=api_key)
+    return sorted(model['name'] for model in response.get('models', []) if model.get('name'))
