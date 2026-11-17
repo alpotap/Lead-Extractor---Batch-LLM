@@ -755,8 +755,8 @@ async def api_retry_review(request: Request) -> dict[str, Any]:
     if not archived_source.exists():
         raise HTTPException(status_code=404, detail="Archived source not found")
 
-    if not incoming_source.exists():
-        shutil.copy2(archived_source, incoming_source)
+    # Always restore the original source to incoming for a fresh processing attempt.
+    shutil.copy2(archived_source, incoming_source)
 
     # Start from saved settings and apply only the per-retry overrides, without
     # mutating the persisted settings used by the background scanner.
@@ -782,6 +782,65 @@ async def api_retry_review(request: Request) -> dict[str, Any]:
 
     outcome = process_incoming(
         settings, only_names={file_name}, manual_fields=manual_fields or None
+    )
+    _invalidate_caches()
+    return {"status": "success", "outcome": outcome}
+
+
+@app.post("/api/review/retry-all")
+async def api_retry_review_all(request: Request) -> dict[str, Any]:
+    """Retry every item currently in the review queue in one sweep.
+
+    Restores each review item's original source file to incoming, then runs the
+    extraction pipeline over all of them together. Per-retry overrides apply to
+    every item in the sweep.
+    """
+    root = _get_root()
+    payload = await request.json()
+
+    review_dir = root / "review"
+    review_files = sorted(review_dir.glob("*.review.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    # Start from saved settings and apply per-retry overrides.
+    settings = dict(_get_settings())
+    if payload.get("ollama_url"):
+        settings["ollama_url"] = str(payload["ollama_url"]).rstrip("/")
+    if payload.get("ollama_model") is not None:
+        settings["selected_model"] = str(payload["ollama_model"]).strip()
+    if payload.get("ollama_api_key") is not None:
+        settings["ollama_api_key"] = str(payload["ollama_api_key"]).strip()
+    if payload.get("minimum_confidence") is not None:
+        try:
+            settings["minimum_extraction_confidence"] = float(payload["minimum_confidence"])
+        except (ValueError, TypeError):
+            pass
+
+    manual_fields: dict[str, Any] = {}
+    company_name = str(payload.get("company_name") or "").strip()
+    if company_name:
+        manual_fields["company_name"] = company_name
+
+    # Restore every review source back to incoming so it can be re-processed.
+    source_files: list[str] = []
+    for f in review_files:
+        data = read_json(f, {})
+        if not isinstance(data, dict):
+            continue
+        source_name = str(data.get("source_file") or f.stem.removesuffix(".review"))
+        archived_source = root / "ingest" / "archived" / Path(source_name).name
+        incoming_source = root / "ingest" / "incoming" / Path(source_name).name
+        if archived_source.exists():
+            shutil.copy2(archived_source, incoming_source)
+            source_files.append(Path(source_name).name)
+
+    if not source_files:
+        return {
+            "status": "success",
+            "outcome": {"processed": 0, "review": 0, "errors": 0, "merged": 0, "new": 0},
+        }
+
+    outcome = process_incoming(
+        settings, only_names=set(source_files), manual_fields=manual_fields or None
     )
     _invalidate_caches()
     return {"status": "success", "outcome": outcome}

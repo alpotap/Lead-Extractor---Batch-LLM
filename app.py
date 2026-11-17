@@ -608,10 +608,16 @@ if active_section == "Review queue":
                         save_ollama_api_key(ollama_api_key)
                         save_settings(settings)
                         
-                        if not incoming_source.exists():
+                        # Always restore the original source to incoming for a fresh attempt.
+                        if incoming_source.exists():
+                            incoming_source.unlink()
+                        if archived_source.exists():
                             shutil.copy2(archived_source, incoming_source)
-                        with st.spinner("Retrying source…"):
-                            outcome = process_incoming(settings, only_names={file_name})
+                        else:
+                            st.warning("Archived source not found; cannot retry.")
+                        if archived_source.exists():
+                            with st.spinner("Retrying source…"):
+                                outcome = process_incoming(settings, only_names={file_name})
                         st.success(f"Retry finished: {outcome['new']} new, {outcome['merged']} merged, {outcome['review']} still need attention.")
                         st.rerun()
                     

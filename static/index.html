@@ -562,9 +562,16 @@
     <!-- ========================================== -->
     <div id="tab-review" class="tab-content hidden w-full max-w-5xl mx-auto space-y-6">
       <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-        <div>
-          <h2 class="text-xl font-bold text-slate-900">Review Queue</h2>
-          <p class="text-sm text-slate-500 mt-1">Extractions that had low confidence or encountered parsing errors.</p>
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-slate-900">Review Queue</h2>
+            <p class="text-sm text-slate-500 mt-1">Extractions that had low confidence or encountered parsing errors.</p>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="openReviewRetryDialogAll()" id="retry-all-btn" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+              Retry All
+            </button>
+          </div>
         </div>
 
         <div id="review-items-container" class="space-y-3 pt-2"></div>
@@ -1864,6 +1871,39 @@
         btn.disabled = false;
         btn.textContent = 'Retry Extraction';
         toast(`Retry failed: ${err.message}`, 'error');
+      }
+    }
+
+    async function openReviewRetryDialogAll() {
+      if (!confirm('Retry every item in the review queue? This re-extracts all failed or low-confidence sources using your saved settings (and any manual company name you entered in the retry dialog).')) return;
+      await retryAllReview();
+    }
+
+    async function retryAllReview() {
+      const btn = document.getElementById('retry-all-btn');
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span>Retrying all…</span>';
+      try {
+        const res = await fetch('/api/review/retry-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_file: '' })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        const o = data.outcome || {};
+        toast(`Retry all complete: ${o.new || 0} new, ${o.merged || 0} merged, ${o.review || 0} still need attention, ${o.errors || 0} errors.`, 'success');
+        loadReviewQueue();
+        fetchStatus();
+      } catch (err) {
+        toast(`Retry all failed: ${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
       }
     }
 
