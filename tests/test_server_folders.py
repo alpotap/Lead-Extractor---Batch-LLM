@@ -28,8 +28,13 @@ def test_folder_can_be_renamed_without_moving_its_data(client: Any):
     assert active["active_folder_name"] == "After"
 
 
-def test_folder_with_data_requires_name_confirmation_before_delete(client: Any):
+def test_folder_with_data_requires_name_confirmation_before_delete(client: Any, monkeypatch: Any):
     import server
+
+    pauses = []
+    resumes = []
+    monkeypatch.setattr(server, "pause_background_scanner", lambda timeout: pauses.append(timeout) or True)
+    monkeypatch.setattr(server, "resume_background_scanner", lambda value: resumes.append(value))
 
     folder = client.post("/api/folders", json={"name": "Delete Me"}).json()["folder"]
     workspace_root = server._get_root()
@@ -50,6 +55,39 @@ def test_folder_with_data_requires_name_confirmation_before_delete(client: Any):
     assert deleted.status_code == 200, deleted.text
     assert not workspace_root.exists()
     assert client.get("/api/folders").json()["active_folder_id"] == ""
+    assert pauses == [30.0]
+    assert resumes == [True]
+
+
+def test_folder_delete_retries_when_windows_reports_nonempty_directory(client: Any, monkeypatch: Any):
+    import server
+    import services.storage as storage
+
+    monkeypatch.setattr(server, "pause_background_scanner", lambda _timeout: True)
+    monkeypatch.setattr(server, "resume_background_scanner", lambda _paused: None)
+    folder = client.post("/api/folders", json={"name": "Retry Delete"}).json()["folder"]
+    workspace_root = server._get_root()
+    (workspace_root / "companies" / "leftover.json").write_text("{}", encoding="utf-8")
+
+    actual_rmtree = storage.shutil.rmtree
+    calls = 0
+
+    def fail_once_then_remove(path: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(145, "The directory is not empty", str(path))
+        actual_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(storage.shutil, "rmtree", fail_once_then_remove)
+    deleted = client.post(
+        "/api/folders/delete",
+        json={"id": folder["id"], "confirmed": True, "confirmation": "Retry Delete"},
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    assert calls == 2
+    assert not workspace_root.exists()
 
 
 

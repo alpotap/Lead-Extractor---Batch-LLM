@@ -1000,12 +1000,21 @@
       }
     }
 
+    async function readFolderResponse(res) {
+      const body = await res.text();
+      try {
+        return body ? JSON.parse(body) : {};
+      } catch (_) {
+        return { detail: body.trim() || `Server returned an invalid response (HTTP ${res.status})` };
+      }
+    }
+
     async function deleteWorkspace() {
       if (!activeWorkspace.id) return;
       let summary;
       try {
         const summaryRes = await fetch(`/api/folders/${encodeURIComponent(activeWorkspace.id)}/summary`);
-        summary = await summaryRes.json();
+        summary = await readFolderResponse(summaryRes);
         if (!summaryRes.ok) throw new Error(summary.detail || `HTTP ${summaryRes.status}`);
       } catch (err) {
         toast(`Could not inspect folder: ${err.message}`, 'error');
@@ -1030,7 +1039,7 @@
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: activeWorkspace.id, confirmed: true, confirmation: confirmation.trim() }),
         });
-        const data = await res.json();
+        const data = await readFolderResponse(res);
         if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
         window.location.reload();
       } catch (err) {

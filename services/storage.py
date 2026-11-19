@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import time
 import tempfile
 import uuid
 from datetime import datetime
@@ -196,7 +198,31 @@ def delete_data_folder(settings: dict[str, Any], folder_id: str) -> dict[str, st
     if resolved_target.parent != resolved_base or target.is_symlink():
         raise ValueError("Folder path is outside the workspace directory")
     if target.exists():
-        shutil.rmtree(target)
+        def remove_readonly(func: Any, path: str, _exc_info: Any) -> None:
+            # Windows may mark downloaded files read-only. Clear that bit and
+            # let rmtree retry the failed operation.
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            func(path)
+
+        last_error: OSError | None = None
+        for attempt in range(6):
+            try:
+                shutil.rmtree(target, onerror=remove_readonly)
+                last_error = None
+                break
+            except OSError as exc:
+                last_error = exc
+                # A file can appear while a tree is being removed (for
+                # example, a watcher completing a write). Retry the whole
+                # subtree removal; rmtree can continue from a partial delete.
+                if attempt < 5:
+                    time.sleep(0.2 * (attempt + 1))
+        if last_error is not None:
+            raise OSError(
+                last_error.errno,
+                f"Could not remove folder data after retries: {last_error.strerror}",
+                str(target),
+            ) from last_error
     write_json(
         data_base(settings) / "folders.json",
         [item for item in folders[1:] if item["id"] != folder_id],

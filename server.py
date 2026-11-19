@@ -475,15 +475,33 @@ async def api_delete_folder(request: Request) -> dict[str, Any]:
     if not summary["has_data"] and payload.get("confirmed") is not True:
         raise HTTPException(status_code=409, detail="Confirm deleting this empty folder")
 
+    scanner_paused = False
+    data_loggers_closed = False
     try:
-        folder = delete_data_folder(settings, folder_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if str(settings.get("active_folder_id") or "") == folder_id:
-        settings["active_folder_id"] = ""
-    save_settings(settings)
-    _invalidate_caches()
-    return {"status": "success", "deleted": folder}
+        scanner_paused = await asyncio.to_thread(pause_background_scanner, 30.0)
+        close_data_loggers()
+        data_loggers_closed = True
+        try:
+            folder = delete_data_folder(settings, folder_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if str(settings.get("active_folder_id") or "") == folder_id:
+            settings["active_folder_id"] = ""
+        save_settings(settings)
+        data_root(settings)
+        _invalidate_caches()
+        return {"status": "success", "deleted": folder}
+    except TimeoutError as exc:
+        raise HTTPException(status_code=409, detail=f"Could not pause background processing for folder deletion: {exc}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not delete folder data: {exc}") from exc
+    finally:
+        try:
+            if data_loggers_closed:
+                configure_logging(data_root(_get_settings()))
+        finally:
+            if scanner_paused:
+                resume_background_scanner(scanner_paused)
 
 
 @app.get("/api/data/archive")
