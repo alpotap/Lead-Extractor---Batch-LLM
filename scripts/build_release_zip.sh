@@ -17,7 +17,7 @@ PACKAGE_DIR="$STAGE_ROOT/$PACKAGE_NAME"
 mkdir -p "$PACKAGE_DIR"
 trap 'rm -rf "$STAGE_ROOT"' EXIT
 
-for file in app.py README.md REFERENCE.md LICENSE VERSION requirements.txt "Start Lead Web.bat" server.py; do
+for file in README.md REFERENCE.md LICENSE VERSION requirements.txt server.py; do
     cp "$REPO_ROOT/$file" "$PACKAGE_DIR/"
 done
 if [[ "$PLATFORM" == macos ]]; then

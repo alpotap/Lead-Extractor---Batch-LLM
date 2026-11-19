@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import math
 import re
@@ -10,16 +11,20 @@ import shutil
 import socket
 import threading
 import time
+import tempfile
+import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any
 from urllib.parse import urlparse
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 
 from models.lead import (
@@ -32,21 +37,33 @@ from models.lead import (
     normalize_social_links,
 )
 from services.ollama import is_local_url, is_ollama_cloud_url, list_models
+from services.backups import create_data_archive, restore_data_archive
 from services.pipeline import (
     SUPPORTED_EXTENSIONS,
+    close_data_loggers,
     configure_logging,
     get_processing_job,
     is_scanner_running,
+    _prepare_source,
     process_incoming,
+    pause_background_scanner,
+    release_processing_sources,
+    reserve_processing_sources,
+    resume_background_scanner,
     start_background_scanner,
 )
 from services.storage import (
     company_files,
+    create_data_folder,
     data_root,
+    data_folder_summary,
+    delete_data_folder,
     load_category_taxonomy,
     load_deleted_default_categories,
     load_settings,
+    list_data_folders,
     read_json,
+    rename_data_folder,
     rebuild_companies,
     safe_stem,
     save_category_taxonomy,
@@ -54,7 +71,14 @@ from services.storage import (
     save_settings,
     write_json,
 )
+
+_url_fetch_jobs: dict[str, dict[str, Any]] = {}
+_URL_FETCH_CONCURRENCY = 5
+_data_archive_jobs: dict[str, dict[str, Any]] = {}
+_data_archive_jobs_lock = threading.Lock()
 from services.web_capture import capture_rendered_html
+
+APP_VERSION = (Path(__file__).resolve().parent / "VERSION").read_text(encoding="utf-8").strip()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -67,7 +91,7 @@ async def lifespan(_app: FastAPI):
     configure_logging(root).info("Background ingestion scanner stopped")
 
 
-app = FastAPI(title="Lead Extractor", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Lead Extractor", version=APP_VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -99,11 +123,6 @@ def _get_root() -> Path:
     return data_root(_get_settings())
 
 
-def _processing_busy() -> bool:
-    job = get_processing_job()
-    return bool(job and not job.get("finished"))
-
-
 def _launch_processing(
     settings: dict[str, Any],
     only_names: set[str] | None,
@@ -115,19 +134,38 @@ def _launch_processing(
     progress is exposed through /api/processing-status.
     """
 
+    reserved = set(only_names or ())
+    if reserved:
+        reserve_processing_sources(reserved)
+
     def runner() -> None:
-        # If the periodic scanner holds the processing lock, wait for it rather
-        # than dropping this request, so manual retries are never silently lost.
-        for _ in range(150):  # up to ~5 minutes of waiting
-            outcome = process_incoming(settings, only_names=only_names, manual_fields=manual_fields)
-            if not outcome.get("skipped"):
-                return
-            time.sleep(2)
-        configure_logging(data_root(settings)).warning(
-            "Manual processing job gave up waiting for the running extraction to finish"
-        )
+        try:
+            _process_incoming_with_lock_wait(settings, only_names, manual_fields)
+            _invalidate_caches()
+        finally:
+            if reserved:
+                release_processing_sources(reserved)
 
     threading.Thread(target=runner, name="lead-manual-processing", daemon=True).start()
+
+
+def _process_incoming_with_lock_wait(
+    settings: dict[str, Any],
+    only_names: set[str] | None,
+    manual_fields: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run process_incoming, waiting for the processing lock if another run holds it.
+
+    The queue worker or another manual trigger may hold the lock. Keep this job
+    queued until the worker can own the pipeline lock, without blocking HTTP.
+    """
+    while True:
+        outcome = process_incoming(
+            settings, only_names=only_names, manual_fields=manual_fields, include_reserved=True
+        )
+        if not outcome.get("skipped"):
+            return outcome
+        time.sleep(0.25)
 
 
 def _lan_ip() -> str:
@@ -181,6 +219,24 @@ def _followup_notes(value: Any) -> list[dict[str, str]]:
         elif str(item).strip():
             notes.append({"id": f"legacy-{index}", "text": str(item).strip(), "created_at": ""})
     return notes
+
+
+def _flat_string_list(value: Any) -> list[str]:
+    """Flatten a list that may contain strings or dicts into a list of strings.
+
+    Company records sometimes store phones/emails as dicts like
+    {"value": "+123..."} instead of plain strings. This normalizes both shapes.
+    """
+    items = value if isinstance(value, list) else []
+    result: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            text = str(item.get("value", item.get("number", ""))).strip()
+        else:
+            text = str(item).strip()
+        if text:
+            result.append(text)
+    return result
 
 
 def _get_company_summaries(root: Path) -> list[dict[str, Any]]:
@@ -290,6 +346,7 @@ def api_status() -> dict[str, Any]:
 
     return {
         "ollama_connected": ollama_connected,
+        "ai_service_connected": ollama_connected,
         "ollama_url": ollama_url,
         "selected_model": selected_model,
         "is_local_url": is_local,
@@ -316,12 +373,255 @@ def api_processing_status() -> dict[str, Any]:
             if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
         )
     review_count = len(list((root / "review").glob("*.review.json")))
+    parsed_count = sum(
+        1 for p in (root / "ingest" / "parsed").glob("*.parsed.txt")
+        if (root / "ingest" / "incoming" / p.name.removesuffix(".parsed.txt")).exists()
+    )
     return {
         "incoming_count": incoming_count,
+        "parsed_count": parsed_count,
         "review_count": review_count,
         "scanner_running": is_scanner_running(),
         "job": get_processing_job(),
     }
+
+
+@app.get("/api/folders")
+def api_list_folders() -> dict[str, Any]:
+    settings = _get_settings()
+    folders = list_data_folders(settings)
+    return {
+        "folders": folders,
+        "active_folder_id": str(settings.get("active_folder_id") or ""),
+        "active_folder_name": next(
+            (item["name"] for item in folders
+             if item["id"] == str(settings.get("active_folder_id") or "")),
+            "Default",
+        ),
+    }
+
+
+@app.post("/api/folders")
+async def api_create_folder(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    settings = _get_settings()
+    try:
+        folder = create_data_folder(settings, str(payload.get("name") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    settings["active_folder_id"] = folder["id"]
+    save_settings(settings)
+    data_root(settings)
+    _invalidate_caches()
+    return {"status": "success", "folder": folder, "active_folder_id": folder["id"]}
+
+
+@app.post("/api/folders/activate")
+async def api_activate_folder(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    settings = _get_settings()
+    folder_id = str(payload.get("id") or "")
+    folders = list_data_folders(settings)
+    folder = next((item for item in folders if item["id"] == folder_id), None)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    settings["active_folder_id"] = folder_id
+    save_settings(settings)
+    data_root(settings)
+    _invalidate_caches()
+    return {"status": "success", "folder": folder}
+
+
+@app.get("/api/folders/{folder_id}/summary")
+def api_folder_summary(folder_id: str) -> dict[str, Any]:
+    try:
+        return data_folder_summary(_get_settings(), folder_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/folders/rename")
+async def api_rename_folder(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    settings = _get_settings()
+    folder_id = str(payload.get("id") or "")
+    try:
+        folder = rename_data_folder(
+            settings, folder_id, str(payload.get("name") or "")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not folder_id:
+        settings["default_folder_name"] = folder["name"]
+        save_settings(settings)
+    _invalidate_caches()
+    return {"status": "success", "folder": folder}
+
+
+@app.post("/api/folders/delete")
+async def api_delete_folder(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    settings = _get_settings()
+    folder_id = str(payload.get("id") or "")
+    try:
+        summary = data_folder_summary(settings, folder_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if _processing_job := get_processing_job():
+        if not _processing_job.get("finished"):
+            raise HTTPException(status_code=409, detail="Wait for active processing to finish before deleting a folder")
+    if summary["has_data"] and str(payload.get("confirmation") or "") != summary["name"]:
+        raise HTTPException(status_code=409, detail="Type the folder name to confirm deleting its data")
+    if not summary["has_data"] and payload.get("confirmed") is not True:
+        raise HTTPException(status_code=409, detail="Confirm deleting this empty folder")
+
+    try:
+        folder = delete_data_folder(settings, folder_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if str(settings.get("active_folder_id") or "") == folder_id:
+        settings["active_folder_id"] = ""
+    save_settings(settings)
+    _invalidate_caches()
+    return {"status": "success", "deleted": folder}
+
+
+@app.get("/api/data/archive")
+def api_download_data_archive() -> FileResponse:
+    job = get_processing_job()
+    if job and not job.get("finished"):
+        raise HTTPException(status_code=409, detail="Wait for active processing to finish before creating an archive")
+    settings = _get_settings()
+    archive_path = Path(tempfile.gettempdir()) / f"lead-extractor-data-{uuid.uuid4().hex}.zip"
+    create_data_archive(settings, archive_path)
+    filename = f"lead-extractor-data-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(lambda: archive_path.unlink(missing_ok=True)),
+    )
+
+
+def _run_data_archive_job(job_id: str, settings: dict[str, Any], archive_path: Path) -> None:
+    def update_progress(done: int, total: int, bytes_done: int, bytes_total: int, current: str) -> None:
+        with _data_archive_jobs_lock:
+            job = _data_archive_jobs.get(job_id)
+            if job is not None:
+                job.update(
+                    files_done=done, total_files=total, bytes_done=bytes_done,
+                    total_bytes=bytes_total, current_file=current,
+                )
+
+    try:
+        create_data_archive(settings, archive_path, progress_callback=update_progress)
+        with _data_archive_jobs_lock:
+            job = _data_archive_jobs.get(job_id)
+            if job is not None:
+                job.update(status="ready", finished=True, current_file="")
+    except Exception as exc:
+        with _data_archive_jobs_lock:
+            job = _data_archive_jobs.get(job_id)
+            if job is not None:
+                job.update(status="failed", finished=True, error=str(exc), current_file="")
+        archive_path.unlink(missing_ok=True)
+
+
+@app.post("/api/data/archive/jobs")
+async def api_start_data_archive_job() -> dict[str, Any]:
+    processing_job = get_processing_job()
+    if processing_job and not processing_job.get("finished"):
+        raise HTTPException(status_code=409, detail="Wait for active processing to finish before creating an archive")
+    with _data_archive_jobs_lock:
+        if any(job.get("status") == "preparing" for job in _data_archive_jobs.values()):
+            raise HTTPException(status_code=409, detail="A data archive is already being prepared")
+        job_id = uuid.uuid4().hex
+        archive_path = Path(tempfile.gettempdir()) / f"lead-extractor-data-{job_id}.zip"
+        _data_archive_jobs[job_id] = {
+            "job_id": job_id, "status": "preparing", "finished": False,
+            "files_done": 0, "total_files": 0, "bytes_done": 0, "total_bytes": 0,
+            "current_file": "", "error": "",
+        }
+    asyncio.create_task(asyncio.to_thread(_run_data_archive_job, job_id, _get_settings(), archive_path))
+    return {"job_id": job_id, "status": "preparing"}
+
+
+@app.get("/api/data/archive/jobs/{job_id}")
+def api_get_data_archive_job(job_id: str) -> dict[str, Any]:
+    with _data_archive_jobs_lock:
+        job = _data_archive_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Archive job not found")
+        return dict(job)
+
+
+def _cleanup_data_archive_job(job_id: str, archive_path: Path) -> None:
+    archive_path.unlink(missing_ok=True)
+    with _data_archive_jobs_lock:
+        _data_archive_jobs.pop(job_id, None)
+
+
+@app.get("/api/data/archive/jobs/{job_id}/download")
+def api_download_ready_data_archive(job_id: str) -> FileResponse:
+    with _data_archive_jobs_lock:
+        job = _data_archive_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Archive job not found")
+        if job.get("status") != "ready":
+            raise HTTPException(status_code=409, detail="Archive is not ready")
+    archive_path = Path(tempfile.gettempdir()) / f"lead-extractor-data-{job_id}.zip"
+    if not archive_path.is_file():
+        raise HTTPException(status_code=404, detail="Prepared archive file was not found")
+    filename = f"lead-extractor-data-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(_cleanup_data_archive_job, job_id, archive_path),
+    )
+
+
+@app.post("/api/data/archive/restore")
+async def api_restore_data_archive(request: Request) -> dict[str, Any]:
+    if request.headers.get("x-restore-confirm", "") != "RESTORE":
+        raise HTTPException(status_code=400, detail="Confirm the restore in Settings before uploading the archive")
+    job = get_processing_job()
+    if job and not job.get("finished"):
+        raise HTTPException(status_code=409, detail="Wait for active processing to finish before restoring an archive")
+    archive_path = Path(tempfile.gettempdir()) / f"lead-extractor-upload-{uuid.uuid4().hex}.zip"
+    try:
+        with archive_path.open("wb") as destination:
+            async for chunk in request.stream():
+                destination.write(chunk)
+        settings = _get_settings()
+        scanner_paused = False
+        data_loggers_closed = False
+        try:
+            scanner_paused = await asyncio.to_thread(pause_background_scanner, 30.0)
+            close_data_loggers()
+            data_loggers_closed = True
+            try:
+                restored_state = restore_data_archive(settings, archive_path)
+            except (ValueError, OSError, zipfile.BadZipFile) as exc:
+                raise HTTPException(status_code=400, detail=f"Could not restore archive: {exc}") from exc
+            settings["active_folder_id"] = restored_state["active_folder_id"]
+            settings["default_folder_name"] = restored_state["default_folder_name"]
+            settings["custom_statuses"] = restored_state["custom_statuses"]
+            save_settings(settings)
+            data_root(settings)
+            _invalidate_caches()
+            return {"status": "success", "active_folder_id": restored_state["active_folder_id"]}
+        except TimeoutError as exc:
+            raise HTTPException(status_code=409, detail=f"Could not pause background processing for restore: {exc}") from exc
+        finally:
+            try:
+                if data_loggers_closed:
+                    configure_logging(data_root(_get_settings()))
+            finally:
+                if scanner_paused:
+                    resume_background_scanner(scanner_paused)
+    finally:
+        archive_path.unlink(missing_ok=True)
 
 
 @app.get("/api/companies")
@@ -402,8 +702,8 @@ def api_companies(
                         f"{contact.get('name','')} {' '.join(contact.get('emails',[]))} {' '.join(contact.get('phones',[]))}"
                         for contact in normalize_contacts(full_rec.get("contacts", []))
                     )
-                    emails_txt = " ".join(full_rec.get("emails", []) if isinstance(full_rec.get("emails", []), list) else [])
-                    phones_txt = " ".join(full_rec.get("phones", []) if isinstance(full_rec.get("phones", []), list) else [])
+                    emails_txt = " ".join(_flat_string_list(full_rec.get("emails", [])))
+                    phones_txt = " ".join(_flat_string_list(full_rec.get("phones", [])))
                     haystack += f" {contacts_txt} {emails_txt} {phones_txt}".casefold()
             if q not in haystack:
                 continue
@@ -489,9 +789,17 @@ def api_get_company(company_id: str) -> dict[str, Any]:
     crm.setdefault("status", "New")
     crm.setdefault("rating", "")
     crm.setdefault("notes", [])
+    sources = company.get("sources", [])
+    sources = sources if isinstance(sources, list) else [sources]
+    available_sources = [
+        Path(str(source)).name for source in sources
+        if Path(str(source)).name
+        and (root / "ingest" / "archived" / Path(str(source)).name).is_file()
+    ]
 
     return {
         "company": company,
+        "available_sources": available_sources,
         "crm": {
             **crm,
             "notes": _followup_notes(crm.get("notes", [])),
@@ -512,10 +820,12 @@ async def api_update_company(company_id: str, request: Request) -> dict[str, Any
     for field in [
         "company_name", "organization_category", "subcategory", "website",
         "emails", "phones", "addresses", "locations", "contacts", "social_links",
-        "opening_hours", "notes", "archived",
+        "notes", "archived",
     ]:
         if field in payload:
             existing[field] = payload[field]
+    if "opening_hours" in payload:
+        existing["opening_hours"] = normalize_opening_hours(payload["opening_hours"])
 
     existing["last_seen"] = datetime.now().astimezone().isoformat(timespec="seconds")
     write_json(company_path, existing)
@@ -635,9 +945,8 @@ async def api_reextract_company(company_id: str, request: Request) -> dict[str, 
         shutil.copy2(archived_source, incoming_source)
 
     settings = _get_settings()
-    outcome = process_incoming(settings, only_names={source_name})
-    _invalidate_caches()
-    return {"status": "success", "outcome": outcome}
+    _launch_processing(settings, {source_name}, None)
+    return {"status": "queued", "source_file": source_name}
 
 
 @app.post("/api/companies")
@@ -679,13 +988,19 @@ async def api_create_lead_manually(request: Request) -> dict[str, Any]:
     return {"status": "success", "company_id": company_id, "company": record}
 
 
-async def _url_fetch_progress(urls: list[str]) -> AsyncGenerator[dict[str, Any], None]:
-    """Yield progress updates as each URL is processed."""
+@app.post("/api/sources/url")
+async def api_fetch_url(request: Request) -> JSONResponse:
+    root = _get_root()
+    payload = await request.json()
+    urls_input = str(payload.get("urls", "")).strip()
+    if not urls_input:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    url_list = list(dict.fromkeys(u.strip() for u in re.split(r"[,\n\r]+", urls_input) if u.strip()))
+
     from services.web_capture import capture_rendered_html
     results: list[dict[str, Any]] = []
-    root = data_root(load_settings())
-    for i, page_url in enumerate(urls, start=1):
-        yield {"type": "progress", "index": i, "total": len(urls), "url": page_url}
+    for page_url in url_list:
         try:
             html = await capture_rendered_html(page_url, settle_seconds=10)
             host = safe_stem(urlparse(page_url).hostname or "website")
@@ -697,19 +1012,73 @@ async def _url_fetch_progress(urls: list[str]) -> AsyncGenerator[dict[str, Any],
         except Exception as exc:
             configure_logging(root).exception("Could not fetch page url=%s", page_url)
             results.append({"url": page_url, "status": "failed", "error": str(exc)})
-    yield {"type": "complete", "results": results, "total": len(urls), "saved": sum(1 for r in results if r["status"] == "saved"), "failed": sum(1 for r in results if r["status"] == "failed")}
+
+    return JSONResponse({
+        "results": results,
+        "total": len(results),
+        "saved": sum(1 for r in results if r["status"] == "saved"),
+        "failed": sum(1 for r in results if r["status"] == "failed"),
+    })
 
 
-@app.post("/api/sources/url")
-async def api_fetch_url(request: Request) -> StreamingResponse:
-    root = _get_root()
+async def _run_url_fetch_job(job_id: str, root: Path, urls: list[str]) -> None:
+    from services.web_capture import capture_rendered_html
+
+    job = _url_fetch_jobs[job_id]
+    semaphore = asyncio.Semaphore(_URL_FETCH_CONCURRENCY)
+
+    async def fetch_one(index: int, page_url: str) -> None:
+        result = job["results"][index]
+        async with semaphore:
+            result["status"] = "fetching"
+            try:
+                html = await capture_rendered_html(page_url, settle_seconds=10)
+                host = safe_stem(urlparse(page_url).hostname or "website")
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                target = root / "ingest" / "incoming" / f"web_{host}_{stamp}.html"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(html, encoding="utf-8")
+                configure_logging(root).info(
+                    "Captured URL source url=%s file=%s html_chars=%d", page_url, target.name, len(html)
+                )
+                result.update(status="saved", file=target.name)
+            except Exception as exc:
+                configure_logging(root).exception("Could not fetch page url=%s", page_url)
+                result.update(status="failed", error=str(exc))
+            finally:
+                job["completed"] += 1
+                job["saved"] = sum(item["status"] == "saved" for item in job["results"])
+                job["failed"] = sum(item["status"] == "failed" for item in job["results"])
+
+    try:
+        await asyncio.gather(*(fetch_one(index, url) for index, url in enumerate(urls)))
+    finally:
+        job["finished"] = True
+
+
+@app.post("/api/sources/url/jobs")
+async def api_start_url_fetch_job(request: Request) -> dict[str, Any]:
     payload = await request.json()
     urls_input = str(payload.get("urls", "")).strip()
     if not urls_input:
         raise HTTPException(status_code=400, detail="URL is required")
+    urls = list(dict.fromkeys(url.strip() for url in re.split(r"[,\n\r]+", urls_input) if url.strip()))
+    job_id = uuid.uuid4().hex
+    _url_fetch_jobs[job_id] = {
+        "id": job_id, "total": len(urls), "completed": 0, "saved": 0, "failed": 0,
+        "finished": False,
+        "results": [{"url": url, "status": "queued"} for url in urls],
+    }
+    asyncio.create_task(_run_url_fetch_job(job_id, _get_root(), urls))
+    return {key: value for key, value in _url_fetch_jobs[job_id].items() if key != "results"} | {"job_id": job_id}
 
-    url_list = list(dict.fromkeys(u.strip() for u in re.split(r"[,\n\r]+", urls_input) if u.strip()))
-    return StreamingResponse(_url_fetch_progress(url_list), media_type="application/json")
+
+@app.get("/api/sources/url/jobs/{job_id}")
+def api_get_url_fetch_job(job_id: str) -> dict[str, Any]:
+    job = _url_fetch_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="URL fetch job not found")
+    return dict(job)
 
 
 @app.post("/api/sources/text")
@@ -820,8 +1189,14 @@ async def api_retry_review(request: Request) -> dict[str, Any]:
     if not archived_source.exists():
         raise HTTPException(status_code=404, detail="Archived source not found")
 
-    # Always restore the original source to incoming for a fresh processing attempt.
-    shutil.copy2(archived_source, incoming_source)
+    # Reserve it before restore so the default-settings queue worker cannot race a retry override.
+    reserve_processing_sources({file_name})
+    try:
+        shutil.copy2(archived_source, incoming_source)
+        _prepare_source(incoming_source, root)
+    except Exception as exc:
+        release_processing_sources({file_name})
+        raise HTTPException(status_code=422, detail=f"Could not prepare source: {exc}") from exc
 
     # Start from saved settings and apply only the per-retry overrides, without
     # mutating the persisted settings used by the background scanner.
@@ -845,11 +1220,8 @@ async def api_retry_review(request: Request) -> dict[str, Any]:
     if company_name:
         manual_fields["company_name"] = company_name
 
-    outcome = process_incoming(
-        settings, only_names={file_name}, manual_fields=manual_fields or None
-    )
-    _invalidate_caches()
-    return {"status": "success", "outcome": outcome}
+    _launch_processing(settings, {file_name}, manual_fields or None)
+    return {"status": "queued", "source_file": file_name}
 
 
 @app.post("/api/review/retry-all")
@@ -895,8 +1267,16 @@ async def api_retry_review_all(request: Request) -> dict[str, Any]:
         archived_source = root / "ingest" / "archived" / Path(source_name).name
         incoming_source = root / "ingest" / "incoming" / Path(source_name).name
         if archived_source.exists():
-            shutil.copy2(archived_source, incoming_source)
-            source_files.append(Path(source_name).name)
+            source_basename = Path(source_name).name
+            reserve_processing_sources({source_basename})
+            try:
+                shutil.copy2(archived_source, incoming_source)
+                _prepare_source(incoming_source, root)
+            except Exception:
+                configure_logging(root).exception("Could not prepare retry source=%s", source_name)
+                release_processing_sources({source_basename})
+                continue
+            source_files.append(source_basename)
 
     if not source_files:
         return {
@@ -904,11 +1284,8 @@ async def api_retry_review_all(request: Request) -> dict[str, Any]:
             "outcome": {"processed": 0, "review": 0, "errors": 0, "merged": 0, "new": 0},
         }
 
-    outcome = process_incoming(
-        settings, only_names=set(source_files), manual_fields=manual_fields or None
-    )
-    _invalidate_caches()
-    return {"status": "success", "outcome": outcome}
+    _launch_processing(settings, set(source_files), manual_fields or None)
+    return {"status": "queued", "source_files": source_files}
 
 
 @app.post("/api/review/dismiss")
@@ -951,8 +1328,10 @@ def api_get_settings() -> dict[str, Any]:
     return {
         "data_path": str(settings.get("data_path", "~/LeadData")),
         "ollama_url": ollama_url,
+        "api_url": ollama_url,
         "selected_model": selected_model,
         "ollama_api_key": api_key,
+        "api_key": api_key,
         "is_local_url": is_local,
         "is_cloud_url": is_cloud,
         "available_models": models,
@@ -961,14 +1340,21 @@ def api_get_settings() -> dict[str, Any]:
         "lan_port": 8502,
         "page_size": int(settings.get("page_size", 50)),
         "resolved_root": str(root),
+        "folders": list_data_folders(settings),
+        "active_folder_id": str(settings.get("active_folder_id") or ""),
+        "version": APP_VERSION,
+        "ai_model": selected_model,
+        "scanner_running": is_scanner_running(),
+        "processing_job": get_processing_job(),
     }
 
 
+@app.post("/api/settings/test-connection")
 @app.post("/api/settings/test-ollama")
 async def api_test_ollama(request: Request) -> dict[str, Any]:
     payload = await request.json()
-    url = str(payload.get("ollama_url", "")).strip().rstrip("/")
-    api_key = str(payload.get("ollama_api_key", "")).strip()
+    url = str(payload.get("api_url", payload.get("ollama_url", ""))).strip().rstrip("/")
+    api_key = str(payload.get("api_key", payload.get("ollama_api_key", ""))).strip()
     is_local = is_local_url(url)
     is_cloud = is_ollama_cloud_url(url)
     if is_cloud:
@@ -1005,13 +1391,19 @@ async def api_save_settings(request: Request) -> dict[str, Any]:
     settings = _get_settings()
 
     if "data_path" in payload:
-        settings["data_path"] = str(payload["data_path"]).strip()
-    if "ollama_url" in payload:
-        settings["ollama_url"] = str(payload["ollama_url"]).rstrip("/")
+        new_data_path = str(payload["data_path"]).strip()
+        if new_data_path != str(settings.get("data_path", "")):
+            settings["active_folder_id"] = ""
+        settings["data_path"] = new_data_path
+    if "api_url" in payload or "ollama_url" in payload:
+        configured_url = str(payload.get("api_url", payload.get("ollama_url", ""))).rstrip("/")
+        settings["api_url"] = configured_url
+        settings["ollama_url"] = configured_url
     if "selected_model" in payload:
         settings["selected_model"] = str(payload["selected_model"]).strip()
-    if "ollama_api_key" in payload:
-        key = str(payload["ollama_api_key"]).strip()
+    if "api_key" in payload or "ollama_api_key" in payload:
+        key = str(payload.get("api_key", payload.get("ollama_api_key", ""))).strip()
+        settings["api_key"] = key
         settings["ollama_api_key"] = key
         save_ollama_api_key(key)
     if "page_size" in payload:
@@ -1050,9 +1442,8 @@ async def api_process_incoming(request: Request) -> dict[str, Any]:
         if archived_source.exists() and not incoming_source.exists():
             shutil.copy2(archived_source, incoming_source)
 
-    outcome = process_incoming(settings)
-    _invalidate_caches()
-    return {"status": "success", "outcome": outcome}
+    _launch_processing(settings, None, None)
+    return {"status": "queued"}
 
 
 @app.post("/api/rebuild")
@@ -1074,6 +1465,7 @@ def index() -> HTMLResponse:
 
 
 def main() -> None:
+    print("Open Lead Extractor in this browser at http://127.0.0.1:8502")
     uvicorn.run("server:app", host="0.0.0.0", port=8502, reload=False)
 
 

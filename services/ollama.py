@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import logging.handlers
 import re
 import shutil
 import subprocess
 import threading
+import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,11 +30,42 @@ from models.lead import (
     normalize_social_links,
 )
 
-SOURCE_CHUNK_CHARS = 5500
-SOURCE_CHUNK_OVERLAP_CHARS = 800
+# Keep the number of sequential model requests low for ordinary webpages while
+# staying within the default 8k context once the extraction schema is included.
+SOURCE_CHUNK_CHARS = 9000
+SOURCE_CHUNK_OVERLAP_CHARS = 400
+MAX_LLM_REQUESTS_PER_MINUTE = 40
+MAX_PARALLEL_LLM_REQUESTS = 4
+_request_times: deque[float] = deque()
+_request_rate_lock = threading.Lock()
+
+
+def _wait_for_request_slot() -> None:
+    """Enforce a shared rolling 40-request-per-minute limit."""
+    while True:
+        with _request_rate_lock:
+            now = time.monotonic()
+            while _request_times and now - _request_times[0] >= 60:
+                _request_times.popleft()
+            if len(_request_times) < MAX_LLM_REQUESTS_PER_MINUTE:
+                _request_times.append(now)
+                return
+            delay = max(0.01, 60 - (now - _request_times[0]))
+        time.sleep(delay)
 
 _RAW_LOGGERS: dict[str, logging.Logger] = {}
-_RAW_LOGGERS_LOCK = threading.Lock
+_RAW_LOGGERS_LOCK = threading.Lock()
+
+
+def close_raw_loggers() -> None:
+    """Close raw-log file handles before a workspace tree is replaced on Windows."""
+    with _RAW_LOGGERS_LOCK:
+        for logger in _RAW_LOGGERS.values():
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                handler.flush()
+                handler.close()
+        _RAW_LOGGERS.clear()
 
 
 def _raw_log_event(
@@ -171,8 +205,15 @@ def _generate_json(
         }
 
     while True:
-        request_time = datetime.now().astimezone().isoformat(timespec="seconds")
         try:
+            _wait_for_request_slot()
+            request_time = datetime.now().astimezone().isoformat(timespec="seconds")
+            _raw_log_event(raw_log_path, {
+                "timestamp": request_time, "event": "request_sent", "task": task,
+                "source_file": source_file, "model": model, "segment": segment,
+                "segment_count": segment_count, "prompt": prompt,
+                "request": {"url": chat_url, "payload": payload},
+            }, raw_log_max_bytes, raw_log_backups)
             result = _request(chat_url, payload, timeout=300, api_key=api_key)
         except Exception as exc:
             error_body = ""
@@ -185,15 +226,14 @@ def _generate_json(
                 "timestamp": request_time, "event": "extraction_error", "task": task,
                 "source_file": source_file, "model": model, "segment": segment,
                 "segment_count": segment_count, "prompt": prompt,
-                "request": {"url": chat_url, "payload": {k: v for k, v in payload.items() if k != "messages"}},
+                "request": {"url": chat_url, "payload": payload},
                 "error": f"{type(exc).__name__}: {exc}", "error_body": error_body,
             }, raw_log_max_bytes, raw_log_backups)
             raise
         _raw_log_event(raw_log_path, {
             "timestamp": request_time, "event": "extraction_response", "task": task,
             "source_file": source_file, "model": model, "segment": segment,
-            "segment_count": segment_count, "prompt": prompt,
-            "request": {"url": chat_url, "payload": {k: v for k, v in payload.items() if k != "messages"}},
+            "segment_count": segment_count, "request": {"url": chat_url},
             "response_text": result.get("choices", [{}])[0].get("message", {}).get("content", "") if openai else result.get("response", ""),
             "response_metadata": {
                 key: value for k, v in result.items()
@@ -307,6 +347,7 @@ def extract_lead(
         f"- {category} (display name: {category.replace('_', ' ').title()}): {', '.join(subcategories) if subcategories else '(no subcategories listed)'}"
         for category, subcategories in taxonomy.items()
     )
+    prompts: list[str] = []
     for chunk_number, chunk in enumerate(chunks, start=1):
         prompt = f"""You extract publishing-related organization leads from supplied source text.
 Return exactly one JSON object and no markdown or commentary. Follow this schema exactly:
@@ -324,12 +365,25 @@ This is source segment {chunk_number} of {len(chunks)}. Adjacent segments may re
 SOURCE TEXT:
 {chunk}
 """
-        extracted = _generate_json(
-            base_url, model, prompt, source_file=source_file, task="full_extraction",
-            segment=chunk_number, segment_count=len(chunks), raw_log_path=raw_log_path,
-            raw_log_max_bytes=raw_log_max_bytes, raw_log_backups=raw_log_backups,
-            api_key=api_key,
-        )
+        prompts.append(prompt)
+
+    # Chunks are independent extraction requests. Run a small bounded group in
+    # parallel, then merge in source order so result selection remains stable.
+    with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_LLM_REQUESTS, len(prompts))) as executor:
+        futures = [
+            executor.submit(
+                _generate_json,
+                base_url, model, prompt,
+                source_file=source_file, task="full_extraction",
+                segment=chunk_number, segment_count=len(chunks), raw_log_path=raw_log_path,
+                raw_log_max_bytes=raw_log_max_bytes, raw_log_backups=raw_log_backups,
+                api_key=api_key,
+            )
+            for chunk_number, prompt in enumerate(prompts, start=1)
+        ]
+        extracted_chunks = [future.result() for future in futures]
+
+    for extracted in extracted_chunks:
         extracted["contacts"] = normalize_contacts(extracted.get("contacts", []))
         extracted["social_links"] = normalize_social_links(extracted.get("social_links", []))
         extracted["opening_hours"] = normalize_opening_hours(extracted.get("opening_hours", []))

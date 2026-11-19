@@ -20,14 +20,12 @@ New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
 
 try {
     $files = @(
-        "app.py",
         "README.md",
         "REFERENCE.md",
         "LICENSE",
         "VERSION",
         "requirements.txt",
         "Start Lead Desk.bat",
-        "Start Lead Web.bat",
         "docs/MACOS.md",
         "docs/LINUX.md",
         "Start Lead Extractor.command",

@@ -27,16 +27,16 @@ The following example is fictional and uses a reserved `.example` domain.
 ### Handle a source in Review queue
 
 1. Open **Review queue** to see processing errors and extractions that need attention, such as a missing company name or low confidence.
-2. Expand an item to read the error or proposed extraction. Check `LeadData/logs/application.log` for timestamped processing details and `LeadData/logs/llm_raw.jsonl` for the exact prompts and raw Ollama responses.
-3. If you correct the source or want another extraction attempt, use the retry action with the selected model. Retrying calls Ollama and may use model resources. The original source is retained under `LeadData/ingest/archived`.
+2. Expand an item to read the error or proposed extraction. Check `LeadData/logs/application.log` for timestamped processing details and `LeadData/logs/llm_raw.jsonl` for the exact prompts and raw AI responses.
+3. If you correct the source or want another extraction attempt, use the retry action with the selected model. Retrying calls the configured AI endpoint. The original source is retained under `LeadData/ingest/archived`.
 4. Dismiss an item only when you no longer need to act on it. Dismissed review JSON is retained in `LeadData/review/dismissed` and excluded from company rebuilding.
 
 <!-- Screenshot: Review queue with an expanded item -->
 
 ### Re-extract or rebuild
 
-1. To ask Ollama to extract an archived source again with the current prompt and selected model, open that company's **Original sources** section and choose the source to retry. This makes model calls; inspect the parsed HTML text first when the source is HTML.
-2. To recreate company records from extraction JSON already saved in `LeadData/extracted`, use **Rebuild from saved data** in the setup panel. Rebuilding reads saved JSON only; it does not read incoming or archived source files and does not call Ollama.
+1. To ask the configured AI endpoint to extract an archived source again with the current prompt and selected model, open that company's **Original sources** section and choose the source to retry. This makes model calls; inspect the parsed HTML text first when the source is HTML.
+2. To recreate company records from extraction JSON already saved in `LeadData/extracted`, use **Rebuild from saved data** in the setup panel. Rebuilding reads saved JSON only; it does not read incoming or archived source files and does not call the AI endpoint.
 3. Rebuilding regenerates company records while CRM files, including follow-up status and notes, are kept separately. It cannot recover information that was never saved to an extraction JSON. Resolve sources still in Review queue by retrying them before rebuilding if you want them included.
 
 <!-- Screenshot: rebuild controls and progress -->
@@ -48,18 +48,18 @@ The following example is fictional and uses a reserved `.example` domain.
 LeadData/
   ingest/incoming/   # manually saved source files and pasted text
   ingest/archived/   # original source files retained after processing
-  ingest/parsed/     # readable TXT prepared from HTML; exact text sent to Ollama
+  ingest/parsed/     # parsed TXT files waiting in the extraction queue
   extracted/         # successful extraction JSON, before company merging
   companies/         # extracted company records
   crm/               # manually maintained CRM records
   review/            # errors and low-confidence extractions
-  logs/              # rotating application and raw Ollama logs
+  logs/              # rotating application and raw AI request logs
   backups/
   categories.json    # user-managed category and subcategory taxonomy
 ```
 
 Keep `data_path` outside the Git checkout. `.gitignore` excludes common local data folders and logs as a safety net. Never put lead or customer records in this public repository.
 
-`logs/application.log` records ISO timestamps with the local UTC offset, ingestion, the selected model, extraction duration, per-candidate duplicate scores, decisions, and errors. `logs/llm_raw.jsonl` records each Ollama prompt and exact generated response, including source filename and chunk number. The raw log rotates at 10 MB and keeps five backups by default; `raw_llm_log_max_bytes` and `raw_llm_log_backups` in `config/settings.json` control its size. Raw logs contain the prepared source text sent to Ollama and remain in the configured Lead data folder.
+`logs/application.log` records ISO timestamps with the local UTC offset, source preparation duration, the selected model, extraction duration, per-candidate duplicate scores, decisions, and errors. `logs/llm_raw.jsonl` records each AI prompt and exact generated response, including source filename and chunk number. The raw log rotates at 10 MB and keeps five backups by default; `raw_llm_log_max_bytes` and `raw_llm_log_backups` in `config/settings.json` control its size. Raw logs contain the prepared source text sent to the AI endpoint and remain in the configured Lead data folder.
 
-Duplicate weights, scan interval (default: 1 minute), minimum extraction confidence, and custom CRM statuses can be configured in `config/settings.json`. The default merge threshold is 70. Processing decisions and errors are recorded in the rotating application log.
+Duplicate weights, AI API URL, minimum extraction confidence, and custom CRM statuses can be configured in `config/settings.json`. New source files are parsed on a half-second polling cycle, regardless of current model activity. Parsed text is queued in `ingest/parsed`; a shared limiter caps model requests at 40 per rolling minute. The default merge threshold is 70. Processing decisions and errors are recorded in the rotating application log.

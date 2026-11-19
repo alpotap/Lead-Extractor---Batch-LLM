@@ -16,6 +16,23 @@ jobs:
       - name: Build Windows ZIP
         shell: pwsh
         run: .\scripts\build_release_zip.ps1
+      - name: Verify ZIP contains only the current Windows launcher and UI
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead("dist/Lead-Extractor-Windows.zip")
+          try {
+            $names = @($zip.Entries | ForEach-Object { $_.FullName })
+            if ($names -contains "Lead-Extractor-Windows/Start Lead Web.bat") { throw "Obsolete web launcher is packaged" }
+            if ($names -contains "Lead-Extractor-Windows/app.py") { throw "Archived Streamlit UI is packaged" }
+            if ($names | Where-Object { $_ -match "/archive/" -or $_ -match "\.pyc$" }) { throw "Archived or compiled files are packaged" }
+            if (-not ($names -contains "Lead-Extractor-Windows/Start Lead Desk.bat")) { throw "Current Windows launcher is missing" }
+            if (-not ($names -contains "Lead-Extractor-Windows/server.py")) { throw "Current server is missing" }
+            $requirementsEntry = $zip.GetEntry("Lead-Extractor-Windows/requirements.txt")
+            $reader = [IO.StreamReader]::new($requirementsEntry.Open())
+            try { $requirements = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            if ($requirements -notmatch "(?m)^uvicorn>=") { throw "Server dependency uvicorn is missing from requirements.txt" }
+          } finally { $zip.Dispose() }
       - name: Keep ZIP as a workflow artifact
         uses: actions/upload-artifact@v4
         with:

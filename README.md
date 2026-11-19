@@ -21,7 +21,7 @@ You want a faster way? Read the detailed guide below
 
 ## Start the app (Fast start suitable for 99% users)
 
-Requirement: have an Ollama (local and Cloud are supported)
+Requirement: configure a supported AI endpoint (Ollama and OpenAI-compatible APIs are supported).
 
 1. Download **Lead-Extractor-Windows.zip** from the [GitHub Releases](https://github.com/alpotap/Lead-Extractor---Batch-LLM/releases) page.
    You can do this and skip to step 3
@@ -147,7 +147,7 @@ NOTE: if you add multiple sources for the same company - all details will be mer
 3. You can view page source and copy paste the text manually into the app
 
       ![](assets/2026-10-21-13-00-24-image.png)
-* The scanner checks the incoming folder every 1 minute. Keep the app running while you wait. It records the selected model and source filename in the processing logs.
+* Filesystem events trigger source preparation as files arrive; a two-second fallback scan catches missed events and network-folder changes. HTML is parsed into `LeadData/ingest/parsed` independently of AI processing, then waits there for the extraction worker. The worker sends no more than 40 model requests per minute.
 
 <!-- Screenshot: Companies and Add a source tabs -->
 

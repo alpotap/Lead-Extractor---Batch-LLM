@@ -15,6 +15,8 @@ from datetime import datetime
 import filecmp
 from pathlib import Path
 from typing import Any
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.observers import Observer
 
 from models.lead import (
     EXTRACTION_TEMPLATE,
@@ -29,6 +31,13 @@ from services.storage import data_root, load_category_taxonomy, merge_company, w
 SUPPORTED_EXTENSIONS = {".txt", ".html", ".htm", ".md"}
 _scanner_lock = threading.Lock()
 _scanner_started = False
+_watch_interval_seconds = 0.5
+_scanner_pause_requested = threading.Event()
+_scanner_paused = threading.Event()
+_scanner_wake_event = threading.Event()
+_stable_observations: dict[str, tuple[int, int, int]] = {}
+_reserved_sources_lock = threading.Lock()
+_reserved_sources: set[str] = set()
 
 # Guards the extraction run itself so the periodic scanner and manual
 # triggers never process the same files at the same time.
@@ -43,10 +52,49 @@ def is_scanner_running() -> bool:
     return _scanner_started
 
 
+def pause_background_scanner(timeout_seconds: float = 30.0) -> bool:
+    """Pause source watchers and hold the extraction lock during data replacement."""
+    if not _scanner_started:
+        return False
+    _scanner_paused.clear()
+    _scanner_pause_requested.set()
+    _scanner_wake_event.set()
+    if not _scanner_paused.wait(timeout_seconds):
+        _scanner_pause_requested.clear()
+        _scanner_wake_event.set()
+        raise TimeoutError("The source watcher did not pause in time")
+    if not _processing_lock.acquire(timeout=timeout_seconds):
+        _scanner_pause_requested.clear()
+        _scanner_paused.clear()
+        _scanner_wake_event.set()
+        raise TimeoutError("The extraction worker did not stop in time")
+    return True
+
+
+def resume_background_scanner(paused: bool) -> None:
+    """Release the extraction lock and resume watchers after data replacement."""
+    if not paused:
+        return
+    _processing_lock.release()
+    _scanner_pause_requested.clear()
+    _scanner_paused.clear()
+    _scanner_wake_event.set()
+
+
 def get_processing_job() -> dict[str, Any] | None:
     """Return a snapshot of the current/last extraction run for progress reporting."""
     with _job_lock:
         return dict(_processing_job) if _processing_job else None
+
+
+def reserve_processing_sources(names: set[str]) -> None:
+    with _reserved_sources_lock:
+        _reserved_sources.update(names)
+
+
+def release_processing_sources(names: set[str]) -> None:
+    with _reserved_sources_lock:
+        _reserved_sources.difference_update(names)
 
 
 def _start_processing_job(total_files: int) -> None:
@@ -169,8 +217,87 @@ def prepare_html(source: Path, parsed_dir: Path) -> tuple[str, Path]:
         raise ValueError("HTML preparation produced no readable text; original source was retained")
     parsed_path = parsed_dir / f"{source.name}.parsed.txt"
     parsed_path.parent.mkdir(parents=True, exist_ok=True)
-    parsed_path.write_text(text + "\n", encoding="utf-8")
+    temporary = parsed_path.with_suffix(parsed_path.suffix + ".tmp")
+    temporary.write_text(text + "\n", encoding="utf-8")
+    temporary.replace(parsed_path)
     return text, parsed_path
+
+
+def _parsed_path(source: Path, parsed_dir: Path) -> Path:
+    return parsed_dir / f"{source.name}.parsed.txt"
+
+
+def _prepare_source(source: Path, root: Path) -> Path:
+    """Prepare a stable incoming source once and return its parsed queue item."""
+    parsed_dir = root / "ingest" / "parsed"
+    parsed_path = _parsed_path(source, parsed_dir)
+    if parsed_path.exists() and parsed_path.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+        return parsed_path
+    if source.suffix.lower() in {".html", ".htm"}:
+        _, parsed_path = prepare_html(source, parsed_dir)
+    else:
+        text = source.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            raise ValueError("Source contains no readable text")
+        parsed_dir.mkdir(parents=True, exist_ok=True)
+        temporary = parsed_path.with_suffix(parsed_path.suffix + ".tmp")
+        temporary.write_text(text.rstrip() + "\n", encoding="utf-8")
+        temporary.replace(parsed_path)
+    return parsed_path
+
+
+def _prepare_incoming(root: Path, logger: logging.Logger) -> None:
+    """Parse newly arrived stable files without waiting for the LLM worker."""
+    incoming = root / "ingest" / "incoming"
+    current_names: set[str] = set()
+    for source in incoming.iterdir():
+        if not source.is_file() or source.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        current_names.add(source.name)
+        try:
+            stat = source.stat()
+            previous = _stable_observations.get(source.name)
+            observations = previous[2] + 1 if previous and previous[:2] == (stat.st_size, stat.st_mtime_ns) else 1
+            _stable_observations[source.name] = (stat.st_size, stat.st_mtime_ns, observations)
+            if observations < 2:
+                continue
+            parsed_candidate = _parsed_path(source, root / "ingest" / "parsed")
+            needs_prepare = not parsed_candidate.exists() or parsed_candidate.stat().st_mtime_ns < stat.st_mtime_ns
+            if not needs_prepare:
+                continue
+            started = time.perf_counter()
+            parsed_path = _prepare_source(source, root)
+            logger.info(
+                "Source prepared source=%s parsed_file=%s source_bytes=%d parsed_chars=%d elapsed_seconds=%.3f",
+                source.name, parsed_path.name, stat.st_size, parsed_path.stat().st_size,
+                time.perf_counter() - started,
+            )
+        except Exception:
+            # Keep malformed sources visible to the existing review workflow.
+            review_path = root / "review" / f"{source.stem}.review.json"
+            write_json(review_path, {
+                "reason": "processing_error",
+                "error": "Source preparation failed; see application.log for details",
+                "source_file": source.name,
+                "created_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            })
+            logger.exception("Failed to prepare source=%s", source.name)
+            try:
+                _archive(source, root / "ingest" / "archived")
+            except OSError:
+                logger.exception("Could not archive unparseable source=%s", source.name)
+            _stable_observations.pop(source.name, None)
+    for old_name in set(_stable_observations) - current_names:
+        _stable_observations.pop(old_name, None)
+
+
+class _IncomingEventHandler(FileSystemEventHandler):
+    def __init__(self, wake_event: threading.Event) -> None:
+        self.wake_event = wake_event
+
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        if not event.is_directory:
+            self.wake_event.set()
 
 
 class ISOFormatter(logging.Formatter):
@@ -197,6 +324,18 @@ def configure_logging(root: Path) -> logging.Logger:
         handler.setFormatter(ISOFormatter("%(asctime)s %(levelname)s %(message)s"))
     logger.setLevel(logging.INFO)
     return logger
+
+
+def close_data_loggers() -> None:
+    """Release app log handles so restore can replace workspace directories on Windows."""
+    logger = logging.getLogger("lead_extractor")
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.handlers.RotatingFileHandler):
+            logger.removeHandler(handler)
+            handler.flush()
+            handler.close()
+    from services.ollama import close_raw_loggers
+    close_raw_loggers()
 
 
 def _normalize_extraction(raw: dict[str, Any], category_taxonomy: dict[str, list[str]] | None = None) -> dict[str, Any]:
@@ -245,6 +384,23 @@ def _confidence(record: dict[str, Any]) -> float:
     return score
 
 
+def _has_contact_information(record: dict[str, Any]) -> bool:
+    """Return true when extraction found at least one person/contact identifier."""
+    if record.get("emails") or record.get("phones"):
+        return True
+    return any(
+        str(contact.get(field) or "").strip()
+        for contact in record.get("contacts", [])
+        if isinstance(contact, dict)
+        for field in ("name", "email", "phone")
+    ) or any(
+        contact.get(field)
+        for contact in record.get("contacts", [])
+        if isinstance(contact, dict)
+        for field in ("emails", "phones")
+    )
+
+
 def _archive(source: Path, archive_dir: Path) -> Path:
     destination = archive_dir / source.name
     if destination.exists():
@@ -262,6 +418,7 @@ def process_incoming(
     settings: dict[str, Any],
     only_names: set[str] | None = None,
     manual_fields: dict[str, Any] | None = None,
+    include_reserved: bool = False,
 ) -> dict[str, int]:
     root = data_root(settings)
     logger = configure_logging(root)
@@ -272,7 +429,7 @@ def process_incoming(
         counts["skipped"] = True
         return counts
     try:
-        return _process_incoming_locked(settings, only_names, manual_fields, counts, logger)
+        return _process_incoming_locked(settings, only_names, manual_fields, counts, logger, include_reserved)
     finally:
         _processing_lock.release()
 
@@ -283,12 +440,27 @@ def _process_incoming_locked(
     manual_fields: dict[str, Any] | None,
     counts: dict[str, int],
     logger: logging.Logger,
+    include_reserved: bool = False,
 ) -> dict[str, int]:
     root = data_root(settings)
     cloud_ollama = is_ollama_cloud_url(settings["ollama_url"])
     manual_fields = manual_fields or {}
     manual_company_name = str(manual_fields.get("company_name") or "").strip()
     openai_compat = is_openai_compatible_url(settings["ollama_url"])
+    incoming = root / "ingest" / "incoming"
+    with _reserved_sources_lock:
+        reserved_sources = set() if include_reserved else set(_reserved_sources)
+    pending_sources = [
+        source for source in sorted(incoming.iterdir())
+        if source.is_file()
+        and source.suffix.lower() in SUPPORTED_EXTENSIONS
+        and (only_names is None or source.name in only_names)
+        and source.name not in reserved_sources
+        and _parsed_path(source, root / "ingest" / "parsed").exists()
+    ]
+    total_files = len(pending_sources)
+    if not total_files:
+        return counts
     if cloud_ollama or openai_compat:
         available_models = []
         model_check_error = ""
@@ -299,14 +471,6 @@ def _process_incoming_locked(
         except Exception as exc:
             available_models = []
             model_check_error = str(exc)
-    incoming = root / "ingest" / "incoming"
-    pending_sources = [
-        source for source in sorted(incoming.iterdir())
-        if source.is_file()
-        and source.suffix.lower() in SUPPORTED_EXTENSIONS
-        and (only_names is None or source.name in only_names)
-    ]
-    total_files = len(pending_sources)
     if total_files:
         _start_processing_job(total_files)
     try:
@@ -316,16 +480,8 @@ def _process_incoming_locked(
             review_path = root / "review" / f"{source.stem}.review.json"
             selected_model = settings.get("selected_model", "")
             try:
-                prepared_path: Path | None = None
-                if source.suffix.lower() in {".html", ".htm"}:
-                    text, prepared_path = prepare_html(source, root / "ingest" / "parsed")
-                    logger.info(
-                        "Prepared HTML source=%s parsed_file=%s source_bytes=%d prepared_chars=%d",
-                        source.name, prepared_path.name, source.stat().st_size, len(text),
-                    )
-                else:
-                    # Plain text and Markdown keep their existing byte-to-text path.
-                    text = source.read_text(encoding="utf-8", errors="replace")
+                prepared_path = _parsed_path(source, root / "ingest" / "parsed")
+                text = prepared_path.read_text(encoding="utf-8", errors="replace")
                 if model_check_error and not openai_compat:
                     raise ValueError(f"Could not verify local Ollama models: {model_check_error}")
                 if not selected_model:
@@ -349,22 +505,35 @@ def _process_incoming_locked(
                 )
                 record = _normalize_extraction(raw, category_taxonomy)
                 confidence = _confidence(record)
+                has_contact_information = _has_contact_information(record)
                 record["_source_file"] = source.name
                 record["_confidence"] = confidence
                 record["_model"] = selected_model
                 record["_processed_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
                 if prepared_path is not None:
                     record["_prepared_file"] = str(prepared_path.relative_to(root))
-                if not record["company_name"] or confidence < float(settings.get("minimum_extraction_confidence", 0.35)):
+                if (
+                    not record["company_name"]
+                    or not has_contact_information
+                    or confidence < float(settings.get("minimum_extraction_confidence", 0.35))
+                ):
+                    reason = (
+                        "missing_company_name" if not record["company_name"]
+                        else "missing_contact_information" if not has_contact_information
+                        else "low_confidence"
+                    )
                     write_json(review_path, {
-                        "reason": "missing_company_name" if not record["company_name"] else "low_confidence",
+                        "reason": reason,
                         "source_file": source.name,
                         "created_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
                         "confidence": confidence,
                         "extraction": record,
                     })
                     counts["review"] += 1
-                    logger.warning("Extraction sent to review: %s (confidence %.2f)", source.name, confidence)
+                    logger.warning(
+                        "Extraction sent to review: %s (reason=%s confidence=%.2f)",
+                        source.name, reason, confidence,
+                    )
                 else:
                     write_json(extracted_path, record)
                     company_id, score, was_merged, candidates = merge_company(root, record, source.name, settings["duplicate_weights"])
@@ -399,25 +568,59 @@ def _process_incoming_locked(
 
 
 def start_background_scanner(settings: dict[str, Any]) -> None:
-    """Start one lightweight daemon scanner per Streamlit server process."""
+    """Start independent parser and LLM queue workers once per server process."""
     global _scanner_started
     with _scanner_lock:
         if _scanner_started:
             return
         _scanner_started = True
 
-    def scan_loop() -> None:
+    def parser_loop() -> None:
+        observer: Observer | None = None
+        watched_directory: Path | None = None
+        while True:
+            if _scanner_pause_requested.is_set():
+                if observer is not None:
+                    observer.stop()
+                    observer.join()
+                    observer = None
+                    watched_directory = None
+                _scanner_paused.set()
+                _scanner_wake_event.wait(timeout=0.25)
+                _scanner_wake_event.clear()
+                continue
+            _scanner_paused.clear()
+            try:
+                from services.storage import load_settings
+                current_settings = load_settings()
+                root = data_root(current_settings)
+                incoming = root / "ingest" / "incoming"
+                if incoming != watched_directory:
+                    if observer is not None:
+                        observer.stop()
+                        observer.join(timeout=2)
+                    _stable_observations.clear()
+                    observer = Observer()
+                    observer.schedule(_IncomingEventHandler(_scanner_wake_event), str(incoming), recursive=False)
+                    observer.start()
+                    watched_directory = incoming
+                    wake_event.set()  # Process existing files at startup or after a folder change.
+                _prepare_incoming(root, configure_logging(root))
+            except Exception:
+                configure_logging(data_root(settings)).exception("Incoming preparation worker failed")
+            _scanner_wake_event.wait(timeout=2.0)  # Filesystem events are immediate; this also recovers missed/network events.
+            _scanner_wake_event.clear()
+
+    def llm_queue_loop() -> None:
+        from services.storage import load_settings
+
         while True:
             try:
-                # Read settings each cycle so sidebar changes take effect without a restart.
-                from services.storage import load_settings
-
-                current_settings = load_settings()
-                process_incoming(current_settings)
+                if not _scanner_pause_requested.is_set() and not _processing_lock.locked():
+                    process_incoming(load_settings())
             except Exception:
-                configure_logging(data_root(settings)).exception("Background scan failed")
-                current_settings = settings
-            interval = max(1, int(current_settings.get("scan_interval_minutes", 1))) * 60
-            threading.Event().wait(interval)
+                configure_logging(data_root(settings)).exception("LLM queue worker failed")
+            threading.Event().wait(_watch_interval_seconds)
 
-    threading.Thread(target=scan_loop, name="lead-incoming-scanner", daemon=True).start()
+    threading.Thread(target=parser_loop, name="lead-source-parser", daemon=True).start()
+    threading.Thread(target=llm_queue_loop, name="lead-llm-queue", daemon=True).start()

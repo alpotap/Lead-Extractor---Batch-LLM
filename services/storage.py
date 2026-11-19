@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -22,9 +23,10 @@ TAXONOMY_FILENAME = "categories.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "data_path": "~/LeadData",
-    "ollama_url": "http://localhost:11434",
+    "api_url": "http://localhost:11434",
     "selected_model": "",
-    "scan_interval_minutes": 1,
+    "active_folder_id": "",
+    "default_folder_name": "Default",
     "minimum_extraction_confidence": 0.35,
     "raw_llm_log_max_bytes": 10000000,
     "raw_llm_log_backups": 5,
@@ -45,8 +47,14 @@ def load_settings() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         loaded = {}
     settings = {**DEFAULT_SETTINGS, **loaded}
+    api_url = str(loaded.get("api_url", loaded.get("ollama_url", DEFAULT_SETTINGS["api_url"])))
+    settings["api_url"] = api_url
+    # Keep in-process aliases while old settings files and integrations migrate.
+    settings["ollama_url"] = api_url
     secrets = read_json(SECRETS_PATH, {})
-    settings["ollama_api_key"] = str(secrets.get("ollama_api_key", "")) if isinstance(secrets, dict) else ""
+    api_key = str(secrets.get("api_key", secrets.get("ollama_api_key", ""))) if isinstance(secrets, dict) else ""
+    settings["api_key"] = api_key
+    settings["ollama_api_key"] = api_key
     settings["duplicate_weights"] = {
         **DEFAULT_SETTINGS["duplicate_weights"],
         **(loaded.get("duplicate_weights") or {}),
@@ -58,6 +66,9 @@ def load_settings() -> dict[str, Any]:
 def save_settings(settings: dict[str, Any]) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     portable = dict(settings)
+    portable["api_url"] = str(portable.get("api_url", portable.get("ollama_url", DEFAULT_SETTINGS["api_url"])))
+    portable.pop("ollama_url", None)
+    portable.pop("api_key", None)
     portable.pop("ollama_api_key", None)
     configured_path = Path(os.path.expandvars(str(portable.get("data_path", "")))).expanduser()
     try:
@@ -71,21 +82,126 @@ def save_settings(settings: dict[str, Any]) -> None:
 
 
 def save_ollama_api_key(api_key: str) -> None:
-    """Keep remote Ollama credentials outside the tracked settings file."""
+    """Keep remote AI endpoint credentials outside the tracked settings file."""
     if api_key.strip():
-        write_json(SECRETS_PATH, {"ollama_api_key": api_key.strip()})
+        write_json(SECRETS_PATH, {"api_key": api_key.strip()})
     else:
         SECRETS_PATH.unlink(missing_ok=True)
 
 
 def data_root(settings: dict[str, Any]) -> Path:
-    root = Path(os.path.expandvars(str(settings["data_path"]))).expanduser().resolve()
+    base = data_base(settings)
+    folder_id = str(settings.get("active_folder_id") or "")
+    folders = list_data_folders(settings)
+    if re.fullmatch(r"[a-f0-9]{32}", folder_id) and any(item["id"] == folder_id for item in folders if item["id"]):
+        root = base / "workspaces" / folder_id
+    else:
+        root = base
     for folder in (
         "ingest/incoming", "ingest/archived", "ingest/parsed", "extracted", "companies", "crm",
         "logs", "backups", "review",
     ):
         (root / folder).mkdir(parents=True, exist_ok=True)
     return root
+
+
+def data_base(settings: dict[str, Any]) -> Path:
+    """Return the configured data directory that contains all workspace folders."""
+    return Path(os.path.expandvars(str(settings["data_path"]))).expanduser().resolve()
+
+
+def list_data_folders(settings: dict[str, Any]) -> list[dict[str, str]]:
+    """List named workspaces stored beneath the configured data directory."""
+    saved = read_json(data_base(settings) / "folders.json", [])
+    folders = [
+        {"id": str(item.get("id") or ""), "name": str(item.get("name") or "").strip()}
+        for item in saved if isinstance(item, dict)
+        if item.get("id") and item.get("name")
+    ] if isinstance(saved, list) else []
+    default_name = " ".join(str(settings.get("default_folder_name") or "Default").split()) or "Default"
+    return [{"id": "", "name": default_name}, *folders]
+
+
+def create_data_folder(settings: dict[str, Any], name: str) -> dict[str, str]:
+    """Create a new isolated workspace without changing or moving existing data."""
+    clean_name = " ".join(name.split())
+    if not clean_name or len(clean_name) > 80:
+        raise ValueError("Folder name must be between 1 and 80 characters")
+    folders = list_data_folders(settings)
+    if any(folder["name"].casefold() == clean_name.casefold() for folder in folders):
+        raise ValueError("A folder with that name already exists")
+    folder = {"id": uuid.uuid4().hex, "name": clean_name}
+    write_json(data_base(settings) / "folders.json", [*folders[1:], folder])
+    (data_base(settings) / "workspaces" / folder["id"]).mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def rename_data_folder(settings: dict[str, Any], folder_id: str, name: str) -> dict[str, str]:
+    clean_name = " ".join(name.split())
+    if not clean_name or len(clean_name) > 80:
+        raise ValueError("Folder name must be between 1 and 80 characters")
+    folders = list_data_folders(settings)
+    if not folder_id:
+        if any(item["id"] and item["name"].casefold() == clean_name.casefold() for item in folders):
+            raise ValueError("A folder with that name already exists")
+        return {"id": "", "name": clean_name}
+    folder = next((item for item in folders[1:] if item["id"] == folder_id), None)
+    if folder is None:
+        raise ValueError("Folder not found")
+    if any(item["id"] != folder_id and item["name"].casefold() == clean_name.casefold() for item in folders):
+        raise ValueError("A folder with that name already exists")
+    renamed = {"id": folder_id, "name": clean_name}
+    write_json(
+        data_base(settings) / "folders.json",
+        [renamed if item["id"] == folder_id else item for item in folders[1:]],
+    )
+    return renamed
+
+
+def data_folder_summary(settings: dict[str, Any], folder_id: str) -> dict[str, Any]:
+    folders = list_data_folders(settings)
+    folder = next((item for item in folders[1:] if item["id"] == folder_id), None)
+    if folder is None:
+        raise ValueError("Folder not found")
+    root = data_base(settings) / "workspaces" / folder_id
+    files = [path for path in root.rglob("*") if path.is_file()] if root.exists() else []
+    incoming = root / "ingest" / "incoming"
+    queued = root / "ingest" / "parsed"
+    company_count = len(list((root / "companies").glob("*.json")))
+    review_count = len(list((root / "review").glob("*.review.json")))
+    incoming_count = sum(1 for path in incoming.iterdir() if path.is_file()) if incoming.exists() else 0
+    queued_count = sum(1 for path in queued.glob("*.parsed.txt") if (incoming / path.name.removesuffix(".parsed.txt")).exists()) if queued.exists() else 0
+    return {
+        **folder,
+        "has_data": bool(files),
+        "file_count": len(files),
+        "company_count": company_count,
+        "review_count": review_count,
+        "incoming_count": incoming_count,
+        "queued_count": queued_count,
+    }
+
+
+def delete_data_folder(settings: dict[str, Any], folder_id: str) -> dict[str, str]:
+    folders = list_data_folders(settings)
+    folder = next((item for item in folders[1:] if item["id"] == folder_id), None)
+    if folder is None:
+        raise ValueError("Folder not found")
+    if not re.fullmatch(r"[a-f0-9]{32}", folder_id):
+        raise ValueError("Invalid folder id")
+    workspace_base = data_base(settings) / "workspaces"
+    target = workspace_base / folder_id
+    resolved_base = workspace_base.resolve()
+    resolved_target = target.resolve()
+    if resolved_target.parent != resolved_base or target.is_symlink():
+        raise ValueError("Folder path is outside the workspace directory")
+    if target.exists():
+        shutil.rmtree(target)
+    write_json(
+        data_base(settings) / "folders.json",
+        [item for item in folders[1:] if item["id"] != folder_id],
+    )
+    return folder
 
 
 def load_category_taxonomy(root: Path) -> dict[str, list[str]]:
@@ -212,11 +328,29 @@ def duplicate_score_details(incoming: dict[str, Any], existing: dict[str, Any], 
     name_a = str(incoming.get("company_name", ""))
     name_b = str(existing.get("company_name", ""))
     name_similarity = fuzz.token_set_ratio(name_a, name_b) if name_a and name_b else 0
-    name_points = int(weights.get("company_name", 0)) if name_similarity >= 88 else 0
+    name_tokens_a = tuple(sorted(re.findall(r"[\w]+", name_a.casefold(), flags=re.UNICODE)))
+    name_tokens_b = tuple(sorted(re.findall(r"[\w]+", name_b.casefold(), flags=re.UNICODE)))
+    exact_name = bool(name_tokens_a and name_tokens_a == name_tokens_b)
+    locations_a = _values(incoming, "locations")
+    locations_b = _values(existing, "locations")
+    conflicting_location = bool(locations_a and locations_b and not locations_a.intersection(locations_b))
+    conflicting_website = bool(
+        incoming_domain and existing_domain and incoming_domain != existing_domain
+    )
+    if exact_name and not conflicting_location and not conflicting_website:
+        # Exact normalized names are strong evidence when the records lack
+        # identifiers (common for a homepage and its contact page). Keep fuzzy
+        # name matches at their configured weight to avoid broad over-merging.
+        name_points = max(int(weights.get("company_name", 0)), 70)
+    else:
+        name_points = int(weights.get("company_name", 0)) if name_similarity >= 88 else 0
     score += name_points
-    signals["company_name"] = {"similarity": name_similarity, "threshold": 88, "points": name_points}
-    city_a = _values(incoming, "locations")
-    city_b = _values(existing, "locations")
+    signals["company_name"] = {
+        "similarity": name_similarity, "threshold": 88, "exact_normalized_match": exact_name,
+        "points": name_points,
+    }
+    city_a = locations_a
+    city_b = locations_b
     city_matches = sorted(city_a & city_b)
     city_points = int(weights.get("city", 0)) if city_matches else 0
     score += city_points

@@ -44,7 +44,6 @@
             <path d="m32 32 5 5"/>
           </svg>
           <span class="text-xl font-bold tracking-tight text-slate-900">Lead Extractor</span>
-          <span class="text-xs bg-slate-100 text-slate-500 font-medium px-2 py-0.5 rounded border border-slate-200">v0.3.0</span>
         </div>
 
         <!-- Navigation Tabs -->
@@ -68,22 +67,13 @@
 
         <!-- Right Status & Settings -->
         <div class="flex items-center gap-2.5">
-          <!-- Network Access Quick Pill -->
-          <button id="header-lan-btn" onclick="copyLanUrl()" class="hidden sm:flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border bg-slate-50 text-slate-700 hover:bg-slate-100 border-slate-200 transition shadow-2xs" title="Click to copy local network address">
-            <span>🌐</span>
-            <span id="header-lan-text">LAN: http://...</span>
-          </button>
-
-          <!-- Ollama Status Pill -->
-          <div id="ollama-pill" class="hidden sm:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border bg-slate-100 text-slate-600 border-slate-200">
-            <span class="w-2 h-2 rounded-full bg-slate-400" id="ollama-dot"></span>
-            <span id="ollama-text">Checking Ollama…</span>
-          </div>
-
-          <!-- Background Scanner Status Pill -->
-          <div id="scanner-pill" class="hidden sm:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border bg-slate-100 text-slate-600 border-slate-200">
-            <span class="w-2 h-2 rounded-full bg-slate-400" id="scanner-dot"></span>
-            <span id="scanner-text">Scanner…</span>
+          <div class="flex items-center gap-1.5">
+            <label for="workspace-select" class="hidden sm:inline text-xs font-semibold text-slate-500">Folder</label>
+            <select id="workspace-select" onchange="activateWorkspace(this.value)" class="max-w-36 sm:max-w-48 text-xs font-semibold border border-slate-200 rounded-lg py-2 pl-2 pr-6 bg-white" title="Active workspace folder">
+              <option value="">Default</option>
+            </select>
+            <button onclick="createWorkspace()" class="px-2.5 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50" title="Create a workspace folder">+</button>
+            <button id="manage-workspace-btn" onclick="manageWorkspace()" class="px-2.5 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50">Manage</button>
           </div>
 
           <!-- Settings Button -->
@@ -130,16 +120,21 @@
               <input type="text" id="company-search" oninput="debounceSearch()" placeholder="Search company name, contact, email, phone, location…" class="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:outline-none text-sm">
             </div>
             
-            <!-- Columns Popover Button -->
+            <!-- Details popover and view type -->
             <div class="relative">
               <button onclick="toggleColumnsPopover()" id="columns-btn" class="text-xs font-semibold px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition flex items-center gap-1.5 whitespace-nowrap text-slate-700 bg-white">
                 <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/></svg>
-                Columns
+                Details
               </button>
               <div id="columns-popover" class="hidden absolute right-0 mt-2 w-52 bg-white rounded-xl shadow-xl border border-slate-200 p-3 z-40 text-xs space-y-1.5 animate-in fade-in zoom-in-95 duration-100">
-                <div class="font-bold text-slate-800 pb-1 border-b text-[11px] uppercase tracking-wider">Visible Columns</div>
+                <div class="font-bold text-slate-800 pb-1 border-b text-[11px] uppercase tracking-wider">Visible Details</div>
                 <div id="column-checkboxes" class="space-y-1 max-h-60 overflow-y-auto custom-scrollbar"></div>
               </div>
+            </div>
+
+            <div class="inline-flex rounded-lg border border-slate-200 bg-white p-0.5" role="group" aria-label="Company view">
+              <button id="company-view-cards" onclick="setCompanyView('cards')" class="px-2.5 py-1.5 rounded-md text-xs font-semibold">Cards</button>
+              <button id="company-view-table" onclick="setCompanyView('table')" class="px-2.5 py-1.5 rounded-md text-xs font-semibold">Table</button>
             </div>
 
             <button onclick="toggleAdvancedFilters()" id="filters-btn" class="text-xs font-semibold px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition flex items-center gap-1.5 whitespace-nowrap text-slate-600 bg-white">
@@ -348,6 +343,13 @@
                 </div>
               </div>
 
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 mb-1">Opening Hours</label>
+                <textarea id="detail-opening-hours" rows="5" placeholder="Monday: 9:00 AM–5:00 PM&#10;Tuesday: Closed"
+                  class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></textarea>
+                <p class="mt-1 text-[11px] text-slate-400">One day or day range per line, in the format “Day: hours”.</p>
+              </div>
+
               <div class="pt-2">
                 <button onclick="saveCompanyDetails()" class="px-5 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition shadow-sm">
                   Save Company Changes
@@ -463,7 +465,7 @@
 
         <!-- URL Sub-tab -->
         <div id="source-pane-url" class="space-y-4">
-          <p class="text-xs text-slate-500">Paste one or multiple URLs (separated by new lines or commas). Pages will be rendered in a headless browser with a 10-second settling delay to capture JavaScript content.</p>
+          <p class="text-xs text-slate-500">Paste one or multiple URLs (separated by new lines or commas). Pages are fetched in parallel and each URL shows its live status.</p>
           <textarea id="source-urls-input" rows="5" placeholder="https://example.com/contact&#10;https://example.org/about" class="w-full text-sm border border-slate-300 rounded-lg p-3 font-mono focus:ring-brand-500"></textarea>
           <button id="fetch-urls-btn" onclick="submitUrls()" class="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition flex items-center gap-2">
             <span>Fetch Pages and Queue Ingestion</span>
@@ -651,7 +653,7 @@
             <input type="text" id="retry-company-name" placeholder="Acme Corporation" class="w-full border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-600 mb-1">Ollama model</label>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">AI model override</label>
             <p class="text-xs text-slate-400 mb-1">Leave blank to use the saved model.</p>
             <input type="text" id="retry-model" placeholder="uses saved model" class="w-full border border-slate-300 rounded-lg p-2 focus:ring-brand-500 font-mono text-xs">
           </div>
@@ -678,14 +680,29 @@
   <!-- ========================================== -->
   <!-- SETTINGS MODAL                             -->
   <!-- ========================================== -->
-  <div id="settings-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto">
-    <div class="bg-white rounded-2xl max-w-xl w-full p-6 shadow-xl space-y-5 border border-slate-200 my-8">
+  <div id="settings-modal" class="hidden fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto">
+    <div class="bg-white rounded-2xl max-w-xl w-full max-h-[calc(100vh-2rem)] overflow-y-auto p-6 shadow-xl space-y-5 border border-slate-200">
       <div class="flex items-center justify-between border-b pb-3">
         <h3 class="text-lg font-bold text-slate-900">Application Settings</h3>
         <button onclick="closeSettingsModal()" class="text-slate-400 hover:text-slate-600 text-xl font-bold">×</button>
       </div>
 
       <div class="space-y-4 text-sm">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div class="bg-slate-50 p-3 rounded-lg border border-slate-200">
+            <div class="text-[11px] uppercase tracking-wide font-bold text-slate-500">Version</div>
+            <div id="settings-app-version" class="text-sm font-semibold text-slate-800 mt-1">—</div>
+          </div>
+          <div class="bg-slate-50 p-3 rounded-lg border border-slate-200">
+            <div class="text-[11px] uppercase tracking-wide font-bold text-slate-500">AI model</div>
+            <div id="settings-current-model" class="text-xs font-mono text-slate-800 mt-1 break-all">—</div>
+          </div>
+          <div class="bg-slate-50 p-3 rounded-lg border border-slate-200">
+            <div class="text-[11px] uppercase tracking-wide font-bold text-slate-500">Background worker</div>
+            <div id="settings-scanner-status" class="text-xs font-semibold text-slate-800 mt-1">—</div>
+          </div>
+        </div>
+
         <!-- Lead Data Directory -->
         <div>
           <label class="block text-xs font-semibold text-slate-600 mb-1">Lead Data Directory</label>
@@ -693,20 +710,35 @@
           <p class="text-xs text-slate-400 mt-1">Resolved: <span id="settings-resolved-root" class="font-mono"></span></p>
         </div>
 
+        <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3">
+          <div>
+            <h4 class="text-sm font-bold text-slate-800">Data archive</h4>
+            <p class="text-xs text-slate-500 mt-1">Archive or restore companies, follow-ups, categories, review items, and folders. Original source files, processing caches, logs, and backups are excluded.</p>
+          </div>
+          <button id="settings-download-archive-btn" type="button" onclick="downloadDataArchive()" class="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold disabled:opacity-50">Download data archive</button>
+          <div class="pt-2 border-t border-slate-200 space-y-2">
+            <label for="settings-restore-archive" class="block text-xs font-semibold text-slate-600">Restore from archive</label>
+            <input id="settings-restore-archive" type="file" accept=".zip,application/zip" onchange="onRestoreArchiveSelected()" class="block w-full text-xs text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-white file:border file:border-slate-300 file:font-semibold">
+            <button id="settings-restore-archive-btn" type="button" onclick="restoreDataArchive()" disabled class="px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed">Restore selected archive</button>
+            <div id="settings-archive-progress-wrap" class="hidden h-2 rounded-full bg-slate-200 overflow-hidden"><div id="settings-archive-progress" class="h-full bg-brand-500 transition-all" style="width:0%"></div></div>
+            <p id="settings-archive-status" class="text-xs text-slate-500" role="status"></p>
+          </div>
+        </div>
+
         <!-- Ollama Server URL & Server Detection Badge -->
         <div>
           <div class="flex items-center justify-between mb-1">
-            <label class="block text-xs font-semibold text-slate-600">Ollama Server URL</label>
-            <span id="settings-server-type-badge" class="text-xs px-2 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-700">Local (localhost)</span>
+            <label id="settings-url-label" class="block text-xs font-semibold text-slate-600">AI API URL</label>
+            <span id="settings-server-type-badge" class="text-xs px-2 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-700">Local Ollama</span>
           </div>
-          <input type="text" id="settings-ollama-url" oninput="onOllamaUrlChange()" placeholder="http://localhost:11434" class="w-full border border-slate-300 rounded-lg p-2 font-mono text-xs focus:ring-brand-500">
+          <input type="text" id="settings-ollama-url" oninput="onOllamaUrlChange()" placeholder="https://api.example.com/v1" class="w-full border border-slate-300 rounded-lg p-2 font-mono text-xs focus:ring-brand-500">
         </div>
 
         <!-- Ollama API Key (Shown for non-local / cloud URLs) -->
         <div id="settings-api-key-container" class="hidden bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-1.5">
-          <label class="block text-xs font-semibold text-slate-700">Ollama API Key</label>
+          <label id="settings-api-key-label" class="block text-xs font-semibold text-slate-700">API Key</label>
           <input type="password" id="settings-ollama-api-key" placeholder="Enter API key" class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:ring-brand-500 bg-white font-mono">
-          <p class="text-xs text-slate-500">Stored locally outside settings.json. Add API key for Cloud-hosted Ollama; leave empty for self-hosted.</p>
+          <p class="text-xs text-slate-500">Stored locally outside settings.json and sent to the configured remote AI endpoint.</p>
         </div>
 
         <!-- Model Selection - Cloud (Free text input) -->
@@ -719,9 +751,9 @@
         <!-- Model Selection - Local/Remote Dropdown with Test & Fetch -->
         <div id="settings-dropdown-model-container" class="space-y-1.5">
           <div class="flex items-center justify-between">
-            <label class="block text-xs font-semibold text-slate-600">Extraction Model</label>
+            <label class="block text-xs font-semibold text-slate-600">AI Model</label>
             <button type="button" id="test-ollama-btn" onclick="testOllamaConnection()" class="text-xs text-brand-600 hover:text-brand-800 font-semibold underline">
-              Test Connection & Refresh Models
+              Test Endpoint & Refresh Models
             </button>
           </div>
           <select id="settings-model-select" class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:ring-brand-500 font-semibold"></select>
@@ -771,14 +803,39 @@
     </div>
   </div>
 
+  <div id="workspace-manage-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-5 border border-slate-200">
+      <div class="flex items-center justify-between border-b pb-3">
+        <div>
+          <h3 class="text-lg font-bold text-slate-900">Manage Folder</h3>
+          <p id="workspace-manage-current-name" class="text-xs text-slate-500 mt-1"></p>
+        </div>
+        <button onclick="closeWorkspaceManager()" class="text-slate-400 hover:text-slate-600 text-xl font-bold">×</button>
+      </div>
+      <div>
+        <label for="workspace-rename-input" class="block text-xs font-semibold text-slate-600 mb-1">Folder name</label>
+        <input id="workspace-rename-input" type="text" maxlength="80" class="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-brand-500">
+      </div>
+      <div class="flex items-center justify-between pt-3 border-t border-slate-100">
+        <button id="delete-workspace-btn" onclick="deleteWorkspace()" class="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-50">Delete folder</button>
+        <div class="flex gap-2">
+          <button onclick="closeWorkspaceManager()" class="px-3 py-2 text-xs font-semibold border border-slate-300 rounded-lg hover:bg-slate-50">Cancel</button>
+          <button onclick="renameWorkspace()" class="px-3 py-2 text-xs font-semibold bg-brand-500 text-white rounded-lg hover:bg-brand-600">Rename</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- JavaScript Application Logic -->
   <script>
     // State
     const ALL_COLUMNS = [
-      "Company", "Status", "Category", "Subcategory", "Email", "Website", 
-      "Phone", "Socials", "Created", "Notes", "Next follow-up", "Updated"
+      "Company", "Status", "Category", "Subcategory", "Email", "Website",
+      "Phone", "Socials", "Location", "Created", "Notes", "Next follow-up", "Updated"
     ];
     let visibleColumns = JSON.parse(localStorage.getItem('lead_extractor_columns') || 'null') || [...ALL_COLUMNS];
+    let companyView = localStorage.getItem('lead_extractor_company_view') || 'cards';
+    let activeWorkspace = { id: '', name: 'Default' };
     let currentTab = 'companies';
     let currentCompanyId = null;
     let currentCompanyData = null;
@@ -789,6 +846,8 @@
     let currentPageSize = parseInt(localStorage.getItem('lead_extractor_page_size') || '50');
     let _currentLanUrl = '';
     let processingPollTimer = null;
+    // Inline company-name overrides typed directly into review rows, keyed by review file name.
+    let reviewInlineCompanyNames = new Map();
 
     // Initialization
     document.addEventListener('DOMContentLoaded', () => {
@@ -799,6 +858,8 @@
       if (sel) sel.value = String(savedPageSize);
 
       initColumnCheckboxes();
+      setCompanyView(companyView, false);
+      loadWorkspaces();
       fetchStatus();
       fetchProcessingStatus();
       loadCategories();
@@ -847,6 +908,134 @@
       }
       localStorage.setItem('lead_extractor_columns', JSON.stringify(visibleColumns));
       loadCompanies(1);
+    }
+
+    function setCompanyView(view, refresh = true) {
+      companyView = view === 'table' ? 'table' : 'cards';
+      localStorage.setItem('lead_extractor_company_view', companyView);
+      for (const option of ['cards', 'table']) {
+        const button = document.getElementById(`company-view-${option}`);
+        if (!button) continue;
+        button.className = option === companyView
+          ? 'px-2.5 py-1.5 rounded-md text-xs font-semibold bg-brand-500 text-white'
+          : 'px-2.5 py-1.5 rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-50';
+      }
+      if (refresh) loadCompanies(1);
+    }
+
+    async function loadWorkspaces() {
+      try {
+        const res = await fetch('/api/folders');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const select = document.getElementById('workspace-select');
+        select.innerHTML = (data.folders || []).map(folder =>
+          `<option value="${escapeHtml(folder.id)}">${escapeHtml(folder.name)}</option>`
+        ).join('');
+        select.value = data.active_folder_id || '';
+        activeWorkspace = (data.folders || []).find(folder => folder.id === (data.active_folder_id || '')) || { id: '', name: 'Default' };
+      } catch (err) {
+        toast(`Could not load folders: ${err.message}`, 'error');
+      }
+    }
+
+    async function activateWorkspace(folderId) {
+      try {
+        const res = await fetch('/api/folders/activate', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: folderId }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        window.location.reload();
+      } catch (err) {
+        toast(`Could not open folder: ${err.message}`, 'error');
+        loadWorkspaces();
+      }
+    }
+
+    async function createWorkspace() {
+      const name = prompt('Name this workspace folder:');
+      if (name === null || !name.trim()) return;
+      try {
+        const res = await fetch('/api/folders', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        window.location.reload();
+      } catch (err) {
+        toast(`Could not create folder: ${err.message}`, 'error');
+      }
+    }
+
+    function manageWorkspace() {
+      document.getElementById('workspace-manage-current-name').textContent = `Active workspace: ${activeWorkspace.name}`;
+      document.getElementById('workspace-rename-input').value = activeWorkspace.name;
+      document.getElementById('delete-workspace-btn').classList.toggle('hidden', !activeWorkspace.id);
+      document.getElementById('workspace-manage-modal').classList.remove('hidden');
+    }
+
+    function closeWorkspaceManager() {
+      document.getElementById('workspace-manage-modal').classList.add('hidden');
+    }
+
+    async function renameWorkspace() {
+      const name = document.getElementById('workspace-rename-input').value.trim();
+      if (!name) {
+        toast('Enter a folder name.', 'error');
+        return;
+      }
+      try {
+        const res = await fetch('/api/folders/rename', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: activeWorkspace.id, name }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        window.location.reload();
+      } catch (err) {
+        toast(`Could not rename folder: ${err.message}`, 'error');
+      }
+    }
+
+    async function deleteWorkspace() {
+      if (!activeWorkspace.id) return;
+      let summary;
+      try {
+        const summaryRes = await fetch(`/api/folders/${encodeURIComponent(activeWorkspace.id)}/summary`);
+        summary = await summaryRes.json();
+        if (!summaryRes.ok) throw new Error(summary.detail || `HTTP ${summaryRes.status}`);
+      } catch (err) {
+        toast(`Could not inspect folder: ${err.message}`, 'error');
+        return;
+      }
+
+      let confirmation = '';
+      if (summary.has_data) {
+        const details = `${summary.company_count} companies, ${summary.review_count} review items, ${summary.queued_count} parsed queue items, and ${summary.file_count} data files`;
+        if (!confirm(`Delete “${summary.name}” and its data? It contains ${details}. This cannot be undone.`)) return;
+        confirmation = prompt(`Second confirmation: type the folder name exactly to permanently delete “${summary.name}”.`);
+        if (confirmation === null || confirmation.trim() !== summary.name) {
+          toast('Folder name did not match. Nothing was deleted.', 'info');
+          return;
+        }
+      } else if (!confirm(`Delete the empty folder “${summary.name}”?`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/folders/delete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: activeWorkspace.id, confirmed: true, confirmation: confirmation.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        window.location.reload();
+      } catch (err) {
+        toast(`Could not delete folder: ${err.message}`, 'error');
+      }
     }
 
     function toggleSecondarySortDirection() {
@@ -916,23 +1105,6 @@
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
-        
-        // Ollama badge
-        const pill = document.getElementById('ollama-pill');
-        const dot = document.getElementById('ollama-dot');
-        const text = document.getElementById('ollama-text');
-        pill.classList.remove('hidden');
-
-        if (data.is_cloud_url) {
-          dot.className = 'w-2 h-2 rounded-full bg-purple-500 animate-pulse';
-          text.textContent = data.selected_model ? `Cloud: ${data.selected_model}` : 'Ollama Cloud';
-        } else if (data.ollama_connected) {
-          dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
-          text.textContent = data.selected_model ? `${data.selected_model}` : 'Ollama Connected';
-        } else {
-          dot.className = 'w-2 h-2 rounded-full bg-amber-500';
-          text.textContent = 'Ollama Offline';
-        }
 
         // Count badges
         document.getElementById('badge-companies-count').textContent = data.total_companies || 0;
@@ -944,35 +1116,12 @@
           revBadge.classList.add('hidden');
         }
 
-        // Header LAN pill
         const lanIp = data.lan_ip || '';
         const lanPort = data.lan_port || 8502;
-        const headerLanBtn = document.getElementById('header-lan-btn');
-        const headerLanText = document.getElementById('header-lan-text');
         if (lanIp && !lanIp.startsWith('127.')) {
           _currentLanUrl = `http://${lanIp}:${lanPort}`;
-          if (headerLanBtn) {
-            headerLanBtn.classList.remove('hidden');
-            headerLanText.textContent = `LAN: ${_currentLanUrl}`;
-          }
         } else {
           _currentLanUrl = `http://localhost:${lanPort}`;
-          if (headerLanBtn) headerLanBtn.classList.add('hidden');
-        }
-
-        // Background scanner status
-        const scannerPill = document.getElementById('scanner-pill');
-        const scannerDot = document.getElementById('scanner-dot');
-        const scannerText = document.getElementById('scanner-text');
-        if (scannerPill) {
-          scannerPill.classList.remove('hidden');
-          if (data.scanner_running) {
-            scannerDot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
-            scannerText.textContent = 'Background scanner active';
-          } else {
-            scannerDot.className = 'w-2 h-2 rounded-full bg-amber-500';
-            scannerText.textContent = 'Scanner not running';
-          }
         }
 
       } catch (e) {
@@ -992,6 +1141,7 @@
         const currentEl = document.getElementById('processing-current-file');
 
         const incomingCount = data.incoming_count || 0;
+        const parsedCount = data.parsed_count || 0;
         const reviewCount = data.review_count || 0;
         const job = data.job;
 
@@ -1015,7 +1165,7 @@
         } else if (hasPending) {
           fillEl.style.width = '100%';
           labelEl.textContent = 'Pending sources';
-          currentEl.textContent = `${incomingCount} incoming · ${reviewCount} in review`;
+          currentEl.textContent = `${parsedCount} parsed and queued · ${incomingCount} incoming · ${reviewCount} in review`;
           countEl.textContent = incomingCount + reviewCount;
           fillEl.className = 'bg-amber-500 h-2 rounded-full transition-all duration-300';
         } else if (job && job.finished && job.result) {
@@ -1127,9 +1277,15 @@
           return;
         }
 
+        if (companyView === 'table') {
+          container.innerHTML = renderCompanyTable(data.companies);
+          return;
+        }
+
         // Render Cards (The browsable list like a normal website!)
         container.innerHTML = data.companies.map(c => {
           const statusBg = getStatusBadge(c.status);
+          const showCompany = visibleColumns.includes('Company');
           const showStatus = visibleColumns.includes('Status');
           const showCat = visibleColumns.includes('Category');
           const showSubcat = visibleColumns.includes('Subcategory');
@@ -1141,6 +1297,7 @@
           const showNotes = visibleColumns.includes('Notes');
           const showFollowup = visibleColumns.includes('Next follow-up');
           const showUpdated = visibleColumns.includes('Updated');
+          const showLocation = visibleColumns.includes('Location');
 
           let catBadgeText = '';
           if (showCat && showSubcat) {
@@ -1161,7 +1318,7 @@
                 <!-- Company Title & Badges -->
                 <div class="flex items-center gap-2.5 flex-wrap">
                   ${c.archived ? '<span class="badge bg-slate-200 text-slate-600">Archived</span>' : ''}
-                  <h3 class="text-base font-bold text-slate-900 hover:text-brand-600 transition">${escapeHtml(c.company_name || 'Unnamed Company')}</h3>
+                  ${showCompany ? `<h3 class="text-base font-bold text-slate-900 hover:text-brand-600 transition">${escapeHtml(c.company_name || 'Unnamed Company')}</h3>` : ''}
                   ${showStatus ? `<span class="badge ${statusBg}">${escapeHtml(c.status || 'New')}</span>` : ''}
                   ${catBadgeText ? `<span class="badge bg-slate-100 text-slate-700 font-medium">${escapeHtml(catBadgeText)}</span>` : ''}
                 </div>
@@ -1190,7 +1347,7 @@
                 ${showPhone && c.phone_count > 0 ? `<span class="flex items-center gap-1 font-medium text-slate-600">📞 ${c.phone_count} phone${c.phone_count > 1 ? 's' : ''}</span>` : ''}
                 ${showSocials && c.social_count > 0 ? `<span class="flex items-center gap-1 font-medium text-slate-600">🔗 ${c.social_count} social${c.social_count > 1 ? 's' : ''}</span>` : ''}
                 ${showNotes && c.note_count > 0 ? `<span class="flex items-center gap-1 font-medium text-brand-700 bg-brand-50 px-2 py-0.5 rounded">📝 ${c.note_count} note${c.note_count > 1 ? 's' : ''}</span>` : ''}
-                ${c.locations && c.locations.length ? `<span class="text-slate-400">📍 ${escapeHtml(c.locations.join(', '))}</span>` : ''}
+                ${showLocation && c.locations && c.locations.length ? `<span class="text-slate-400">📍 ${escapeHtml(c.locations.join(', '))}</span>` : ''}
               </div>
             </div>
           `;
@@ -1200,6 +1357,26 @@
         console.error('Error loading companies', err);
         container.innerHTML = `<div class="p-6 text-center text-rose-600 text-sm">Failed to load companies: ${escapeHtml(err.message)}</div>`;
       }
+    }
+
+    function renderCompanyTable(companies) {
+      const columns = visibleColumns;
+      const cells = {
+        'Company': c => `<span class="font-semibold text-slate-900">${escapeHtml(c.company_name || 'Unnamed Company')}</span>${c.archived ? ' <span class="badge bg-slate-200 text-slate-600">Archived</span>' : ''}`,
+        'Status': c => `<span class="badge ${getStatusBadge(c.status)}">${escapeHtml(c.status || 'New')}</span>`,
+        'Category': c => escapeHtml((c.organization_category || '').replace(/_/g, ' ')),
+        'Subcategory': c => escapeHtml((c.subcategory || '').replace(/_/g, ' ')),
+        'Email': c => c.email_count ? `${c.email_count} email${c.email_count === 1 ? '' : 's'}` : '—',
+        'Website': c => c.website ? `<a href="${escapeHtml(c.website.startsWith('http') ? c.website : 'https://' + c.website)}" target="_blank" onclick="event.stopPropagation()" class="text-brand-600 hover:underline">${escapeHtml(c.website.replace(/^https?:\/\//, ''))}</a>` : '—',
+        'Phone': c => c.phone_count ? `${c.phone_count} phone${c.phone_count === 1 ? '' : 's'}` : '—',
+        'Socials': c => c.social_count || '—',
+        'Location': c => escapeHtml((c.locations || []).join(', ') || '—'),
+        'Created': c => escapeHtml(c.first_seen_formatted || '—'),
+        'Notes': c => c.note_count || '—',
+        'Next follow-up': c => escapeHtml(c.next_followup_formatted || '—'),
+        'Updated': c => escapeHtml(c.last_seen_formatted || '—'),
+      };
+      return `<div class="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm"><table class="w-full text-left text-xs"><thead class="bg-slate-50 text-slate-500"><tr>${columns.map(col => `<th class="px-3 py-2.5 font-semibold whitespace-nowrap">${escapeHtml(col)}</th>`).join('')}</tr></thead><tbody class="divide-y divide-slate-100">${companies.map(c => `<tr tabindex="0" role="button" onclick="openCompanyDetail('${escapeJs(c.company_id)}')" onkeydown="if(event.key==='Enter') openCompanyDetail('${escapeJs(c.company_id)}')" class="cursor-pointer hover:bg-brand-50/50 focus:bg-brand-50/50">${columns.map(col => `<td class="px-3 py-2.5 whitespace-nowrap max-w-72 truncate">${(cells[col] || (() => '—'))(c) || '—'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
     }
 
     function renderPagination(current, total) {
@@ -1280,12 +1457,18 @@
         document.getElementById('detail-phones').value = (c.phones || []).join('\n');
         document.getElementById('detail-addresses').value = (c.addresses || []).join('\n');
         document.getElementById('detail-locations').value = (c.locations || []).join('\n');
+        document.getElementById('detail-opening-hours').value = (c.opening_hours || []).map(item => {
+          if (typeof item === 'string') return item;
+          const day = String(item.day || item.days || '').trim();
+          const hours = String(item.hours || item.open || item.time || '').trim();
+          return day && hours ? `${day}: ${hours}` : (day || hours);
+        }).filter(Boolean).join('\n');
 
         // Contacts
         renderContactsTable(c.contacts || []);
 
         // Sources
-        renderSourcesList(c.sources || []);
+        renderSourcesList(c.sources || [], data.available_sources || []);
 
         // CRM Controls
         populateCrmStatuses(crm.status);
@@ -1370,7 +1553,7 @@
     }
 
     // Sources list
-    function renderSourcesList(sources) {
+    function renderSourcesList(sources, availableSources = []) {
       const el = document.getElementById('detail-sources-list');
       if (!sources || sources.length === 0) {
         el.innerHTML = '<span class="text-xs text-slate-400">No original files attached.</span>';
@@ -1379,19 +1562,20 @@
 
       el.innerHTML = sources.map(src => {
         const name = src.split(/[\\/]/).pop();
+        const available = availableSources.includes(name);
         return `
           <div class="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200 text-xs font-mono">
             <span class="truncate max-w-sm">${escapeHtml(name)}</span>
-            <button onclick="reextractSource('${escapeJs(name)}')" class="px-2 py-1 text-xs bg-white border border-slate-300 rounded hover:bg-slate-100 font-sans font-semibold text-slate-700">
-              Re-extract
-            </button>
+            ${available
+              ? `<button onclick="reextractSource('${escapeJs(name)}')" class="px-2 py-1 text-xs bg-white border border-slate-300 rounded hover:bg-slate-100 font-sans font-semibold text-slate-700">Re-extract</button>`
+              : `<span class="px-2 py-1 text-[11px] text-slate-400 font-sans" title="Only the filename is kept in data archives">Original file unavailable</span>`}
           </div>
         `;
       }).join('');
     }
 
     async function reextractSource(sourceName) {
-      if (!confirm(`Re-extract ${sourceName} using your configured Ollama model?`)) return;
+      if (!confirm(`Re-extract ${sourceName} using your configured AI model?`)) return;
       try {
         toast('Starting re-extraction…');
         const res = await fetch(`/api/companies/${encodeURIComponent(currentCompanyId)}/reextract`, {
@@ -1436,6 +1620,12 @@
         phones: document.getElementById('detail-phones').value.split('\n').map(s => s.trim()).filter(Boolean),
         addresses: document.getElementById('detail-addresses').value.split('\n').map(s => s.trim()).filter(Boolean),
         locations: document.getElementById('detail-locations').value.split('\n').map(s => s.trim()).filter(Boolean),
+        opening_hours: document.getElementById('detail-opening-hours').value.split('\n').map(line => {
+          const colon = line.indexOf(':');
+          return colon < 0
+            ? { day: '', hours: line.trim() }
+            : { day: line.slice(0, colon).trim(), hours: line.slice(colon + 1).trim() };
+        }).filter(item => item.day || item.hours),
         contacts: contacts,
       };
 
@@ -1626,28 +1816,52 @@
       btn.innerHTML = '<span>Fetching pages (may take ~10s per page)…</span>';
       const resultsDiv = document.getElementById('fetch-results');
       resultsDiv.classList.remove('hidden');
-      resultsDiv.innerHTML = '<span class="text-xs text-slate-400">Loading pages and waiting for render…</span>';
+      resultsDiv.innerHTML = '<div class="text-sm text-slate-600">Starting URL fetch…</div>';
 
       try {
-        const res = await fetch('/api/sources/url', {
+        const res = await fetch('/api/sources/url/jobs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ urls })
         });
-        const data = await res.json();
-        resultsDiv.innerHTML = data.results.map(r => `
-          <div class="p-2.5 rounded-lg border text-xs flex items-center justify-between ${r.status === 'saved' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800'}">
-            <span class="truncate max-w-md font-mono">${escapeHtml(r.url)}</span>
-            <span class="font-bold">${r.status === 'saved' ? '✅ Saved' : '❌ Failed: ' + escapeHtml(r.error)}</span>
-          </div>
-        `).join('');
+        const started = await res.json();
+        if (!res.ok) throw new Error(started.detail || `HTTP ${res.status}`);
         input.value = '';
-        toast('URL batch submitted! Ingestion will run on the next scan cycle.', 'success');
-      } catch (err) {
-        toast(`Fetch error: ${err.message}`, 'error');
-      } finally {
         btn.disabled = false;
         btn.innerHTML = '<span>Fetch Pages and Queue Ingestion</span>';
+        toast(`Fetching ${started.total} page${started.total === 1 ? '' : 's'} in the background.`, 'success');
+        pollUrlFetchJob(started.job_id, resultsDiv);
+      } catch (err) {
+        toast(`Fetch error: ${err.message}`, 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<span>Fetch Pages and Queue Ingestion</span>';
+      }
+    }
+
+    async function pollUrlFetchJob(jobId, resultsDiv) {
+      try {
+        const res = await fetch(`/api/sources/url/jobs/${encodeURIComponent(jobId)}`);
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.detail || `HTTP ${res.status}`);
+        const percent = job.total ? Math.round(job.completed * 100 / job.total) : 100;
+        const visibleResults = (job.results || []).map(r => {
+          const state = r.status === 'saved' ? `✅ Saved · ${escapeHtml(r.file || '')}`
+            : r.status === 'failed' ? `❌ Failed · ${escapeHtml(r.error || 'Unknown error')}`
+            : r.status === 'fetching' ? '⏳ Fetching page…' : 'Queued';
+          const tone = r.status === 'saved' ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : r.status === 'failed' ? 'bg-rose-50 border-rose-200 text-rose-800'
+            : r.status === 'fetching' ? 'bg-sky-50 border-sky-200 text-sky-800' : 'bg-slate-50 border-slate-200 text-slate-600';
+          return `<div class="p-2.5 rounded-lg border text-xs flex items-center justify-between gap-3 ${tone}">
+            <span class="truncate min-w-0 font-mono">${escapeHtml(r.url)}</span><span class="font-bold shrink-0">${state}</span></div>`;
+        }).join('');
+        resultsDiv.innerHTML = `<div class="space-y-2">
+          <div class="flex justify-between text-xs font-semibold text-slate-700"><span>${job.finished ? 'Fetch complete' : 'Fetching pages in background'}</span>
+          <span>${job.completed}/${job.total} complete · ${job.saved} saved · ${job.failed} failed</span></div>
+          <div class="h-2 rounded-full bg-slate-100 overflow-hidden"><div class="h-full bg-brand-500 transition-all" style="width:${percent}%"></div></div>
+          <div class="max-h-80 overflow-y-auto space-y-1.5">${visibleResults}</div></div>`;
+        if (!job.finished) window.setTimeout(() => pollUrlFetchJob(jobId, resultsDiv), 1000);
+      } catch (err) {
+        resultsDiv.insertAdjacentHTML('afterbegin', `<div class="text-sm text-rose-700">Could not update fetch progress: ${escapeHtml(err.message)}</div>`);
       }
     }
 
@@ -1847,23 +2061,36 @@
 
         container.innerHTML = data.review.map(item => {
           const conf = item.confidence != null ? `Confidence: ${item.confidence.toFixed(2)}` : '';
+          const failedAt = item.created_at ? formatReviewTime(item.created_at) : '';
           return `
           <div class="p-4 bg-amber-50/70 border border-amber-200 rounded-xl text-xs space-y-2">
             <div class="flex items-center justify-between gap-2">
               <div class="flex flex-col gap-0.5">
                 <span class="font-bold font-mono text-amber-900">${escapeHtml(item.source_file)}</span>
+                ${failedAt ? `<span class="text-slate-500">Failed ${failedAt}</span>` : ''}
                 ${conf ? `<span class="text-slate-500">${conf}</span>` : ''}
               </div>
               <span class="badge bg-amber-200 text-amber-900">${escapeHtml(item.reason)}</span>
             </div>
             ${item.error ? `<div class="bg-white p-2 rounded border border-amber-200 text-rose-700 font-mono text-xs overflow-x-auto">${escapeHtml(item.error)}</div>` : ''}
+            <div class="pt-2 border-t border-amber-100/50">
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-slate-500 font-medium block mb-0">Company name (manual override)</label>
+                <input type="text" value="${escapeHtml(reviewInlineCompanyNames.get(item.file) || '')}" oninput="storeReviewCompanyName(decodeURIComponent('${encodeURIComponent(item.file)}'), this.value)" placeholder="e.g. Acme Corporation" class="flex-1 text-xs border border-slate-300 rounded p-1.5 focus:ring-brand-500 font-mono text-slate-700">
+                ${item.archived_exists ? `
+                  <button onclick="retryReviewInline(decodeURIComponent('${encodeURIComponent(item.file)}'), decodeURIComponent('${encodeURIComponent(item.source_file)}'))" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold transition whitespace-nowrap">
+                    Retry
+                  </button>
+                ` : ''}
+              </div>
+            </div>
             <div class="flex items-center justify-end gap-2 pt-1">
               ${item.archived_exists ? `
-                <button onclick="openReviewRetryDialog(${escapeJs(JSON.stringify(item))})" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold transition">
-                  Retry Extraction
+                <button onclick="openReviewRetryDialog(decodeURIComponent('${encodeURIComponent(JSON.stringify(item))}'))" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold transition">
+                  Retry Extraction (with options)
                 </button>
               ` : ''}
-              <button onclick="dismissReview('${escapeJs(item.file)}')" class="px-3 py-1.5 border border-amber-300 hover:bg-amber-100 text-amber-800 rounded-lg font-semibold transition">
+              <button onclick="dismissReview(decodeURIComponent('${encodeURIComponent(item.file)}'))" class="px-3 py-1.5 border border-amber-300 hover:bg-amber-100 text-amber-800 rounded-lg font-semibold transition">
                 Dismiss
               </button>
             </div>
@@ -1909,7 +2136,8 @@
       } else {
         extRow.classList.add('hidden');
       }
-      document.getElementById('retry-company-name').value = '';
+      const inlineCompanyName = reviewInlineCompanyNames.get(item.file) || '';
+      document.getElementById('retry-company-name').value = inlineCompanyName;
       document.getElementById('retry-model').value = '';
       document.getElementById('retry-min-confidence').value = '';
       document.getElementById('retry-submit-btn').disabled = false;
@@ -1933,9 +2161,32 @@
       toast('Will use saved settings (model, URL, API key, confidence).', 'info');
     }
 
+    async function retryReviewInline(fileName, sourceFile) {
+      const companyName = (reviewInlineCompanyNames.get(fileName) || '').trim();
+      const payload = { source_file: sourceFile };
+      if (companyName) payload.company_name = companyName;
+
+      try {
+        const res = await fetch('/api/review/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        await res.json();
+        toast('Retry started. Extraction runs in the background — watch the progress bar at the top.', 'success');
+        loadReviewQueue();
+        fetchStatus();
+      } catch (err) {
+        toast(`Retry failed: ${err.message}`, 'error');
+      }
+    }
+
     async function submitReviewRetry() {
       if (!reviewRetryItem) return;
-      const btn = document.getElementById('retry-submit-btn');
       const companyName = document.getElementById('retry-company-name').value.trim();
       const model = document.getElementById('retry-model').value.trim();
       const minConfidence = document.getElementById('retry-min-confidence').value.trim();
@@ -1948,6 +2199,7 @@
         if (!isNaN(parsed)) payload.minimum_confidence = parsed;
       }
 
+      const btn = document.getElementById('retry-submit-btn');
       btn.disabled = true;
       btn.textContent = 'Retrying…';
       try {
@@ -2067,6 +2319,8 @@
 
     function _updateServerTypeBadge(url) {
       const badge = document.getElementById('settings-server-type-badge');
+      const urlLabel = document.getElementById('settings-url-label');
+      const apiKeyLabel = document.getElementById('settings-api-key-label');
       const apiKeyContainer = document.getElementById('settings-api-key-container');
       const cloudModelContainer = document.getElementById('settings-cloud-model-container');
       const dropdownModelContainer = document.getElementById('settings-dropdown-model-container');
@@ -2074,22 +2328,29 @@
 
       const lc = url.toLowerCase();
       const isCloud = lc.includes('ollama.com') && lc.startsWith('https');
+      const isOllama = isCloud || /localhost|127\.0\.0\.1|11434|ollama/i.test(lc);
       const isLocal = lc.includes('localhost') || lc.includes('127.0.0.1') || lc.startsWith('http://192.') || lc.startsWith('http://10.') || lc.startsWith('http://172.');
 
       if (isCloud) {
         badge.textContent = '☁️ Ollama Cloud';
+        urlLabel.textContent = 'Ollama Cloud API URL';
+        apiKeyLabel.textContent = 'Ollama API Key';
         badge.className = 'text-xs px-2 py-0.5 rounded font-semibold bg-purple-100 text-purple-700';
         apiKeyContainer.classList.remove('hidden');
         cloudModelContainer.classList.remove('hidden');
         dropdownModelContainer.classList.add('hidden');
       } else if (isLocal) {
-        badge.textContent = '🏠 Local (localhost)';
+        badge.textContent = isOllama ? '🏠 Local Ollama' : '🏠 Local AI API';
+        urlLabel.textContent = isOllama ? 'Ollama Server URL' : 'Local AI API URL';
+        apiKeyLabel.textContent = 'API Key';
         badge.className = 'text-xs px-2 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-700';
         apiKeyContainer.classList.add('hidden');
         cloudModelContainer.classList.add('hidden');
         dropdownModelContainer.classList.remove('hidden');
       } else {
-        badge.textContent = '🌐 Remote Server';
+        badge.textContent = isOllama ? '🌐 Remote Ollama' : '🌐 Remote AI API';
+        urlLabel.textContent = isOllama ? 'Ollama Server URL' : 'AI API URL';
+        apiKeyLabel.textContent = isOllama ? 'Ollama API Key' : 'API Key';
         badge.className = 'text-xs px-2 py-0.5 rounded font-semibold bg-sky-100 text-sky-700';
         apiKeyContainer.classList.remove('hidden');
         cloudModelContainer.classList.add('hidden');
@@ -2114,10 +2375,10 @@
       btn.disabled = true;
 
       try {
-        const res = await fetch('/api/settings/test-ollama', {
+        const res = await fetch('/api/settings/test-connection', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ollama_url: url, ollama_api_key: apiKey })
+          body: JSON.stringify({ api_url: url, api_key: apiKey })
         });
         const data = await res.json();
         statusEl.textContent = data.message || (data.success ? 'Connected!' : 'Failed');
@@ -2144,12 +2405,19 @@
 
         document.getElementById('settings-data-path').value = data.data_path || '';
         document.getElementById('settings-resolved-root').textContent = data.resolved_root || '';
+        document.getElementById('settings-app-version').textContent = `v${data.version || 'unknown'}`;
+        document.getElementById('settings-current-model').textContent = data.ai_model || 'No model selected';
+        const workerStatus = document.getElementById('settings-scanner-status');
+        const activeJob = data.processing_job;
+        workerStatus.textContent = activeJob && !activeJob.finished
+          ? `Processing ${activeJob.current || 'queue'} · ${activeJob.processed}/${activeJob.total}`
+          : (data.scanner_running ? 'Active · watching folders and queue' : 'Not running');
 
         const url = data.ollama_url || 'http://localhost:11434';
         document.getElementById('settings-ollama-url').value = url;
         _updateServerTypeBadge(url);
 
-        document.getElementById('settings-ollama-api-key').value = data.ollama_api_key || '';
+        document.getElementById('settings-ollama-api-key').value = data.api_key || data.ollama_api_key || '';
 
         // Pagination preference
         const pageSizeEl = document.getElementById('settings-page-size');
@@ -2201,6 +2469,97 @@
       document.getElementById('settings-modal').classList.add('hidden');
     }
 
+    function onRestoreArchiveSelected() {
+      const file = document.getElementById('settings-restore-archive').files?.[0];
+      const button = document.getElementById('settings-restore-archive-btn');
+      const status = document.getElementById('settings-archive-status');
+      button.disabled = !file;
+      status.textContent = file ? `Selected: ${file.name} (${formatBytes(file.size)})` : '';
+    }
+
+    async function downloadDataArchive() {
+      const status = document.getElementById('settings-archive-status');
+      const button = document.getElementById('settings-download-archive-btn');
+      const progressWrap = document.getElementById('settings-archive-progress-wrap');
+      const progressBar = document.getElementById('settings-archive-progress');
+      button.disabled = true;
+      progressWrap.classList.remove('hidden');
+      progressBar.style.width = '0%';
+      status.textContent = 'Starting archive preparation…';
+      try {
+        const startRes = await fetch('/api/data/archive/jobs', { method: 'POST' });
+        const started = await startRes.json().catch(() => ({}));
+        if (!startRes.ok) throw new Error(started.detail || `HTTP ${startRes.status}`);
+
+        let job;
+        do {
+          const res = await fetch(`/api/data/archive/jobs/${encodeURIComponent(started.job_id)}`);
+          job = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(job.detail || `HTTP ${res.status}`);
+          if (job.status === 'failed') throw new Error(job.error || 'Archive preparation failed');
+          const percent = job.total_files ? Math.round(job.files_done * 100 / job.total_files) : 0;
+          progressBar.style.width = `${percent}%`;
+          const fileProgress = job.total_files ? `${job.files_done}/${job.total_files} files` : 'Scanning displayed data';
+          const byteProgress = job.total_bytes ? ` · ${formatBytes(job.bytes_done)} of ${formatBytes(job.total_bytes)}` : '';
+          const currentFile = job.current_file ? ` · ${escapeHtml(job.current_file)}` : '';
+          status.innerHTML = `Preparing archive: ${fileProgress}${byteProgress}${currentFile}`;
+          if (!job.finished) await new Promise(resolve => window.setTimeout(resolve, 800));
+        } while (!job.finished);
+
+        if (job.status !== 'ready') throw new Error('Archive preparation did not complete');
+        progressBar.style.width = '100%';
+        const link = document.createElement('a');
+        link.href = `/api/data/archive/jobs/${encodeURIComponent(started.job_id)}/download`;
+        link.download = 'lead-extractor-data.zip';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        status.textContent = `Archive ready (${formatBytes(job.total_bytes)}). Download started.`;
+      } catch (err) {
+        status.textContent = `Archive failed: ${err.message}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function restoreDataArchive() {
+      const file = document.getElementById('settings-restore-archive').files?.[0];
+      if (!file) return;
+      const status = document.getElementById('settings-archive-status');
+      if (!confirm(`Restore from “${file.name}”? This will replace companies, follow-ups, folders, categories, and review queue data. Original source files and processing caches are not included in these archives. App settings and API credentials will remain unchanged.`)) return;
+      const phrase = prompt('Second confirmation: type RESTORE to replace the current workspace data.');
+      if (phrase !== 'RESTORE') {
+        if (phrase !== null) status.textContent = 'Confirmation did not match. Nothing was restored.';
+        return;
+      }
+
+      const button = document.getElementById('settings-restore-archive-btn');
+      button.disabled = true;
+      status.textContent = 'Validating and restoring archive…';
+      try {
+        const res = await fetch('/api/data/archive/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/zip', 'X-Restore-Confirm': 'RESTORE' },
+          body: file,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        status.textContent = 'Archive restored. Reloading…';
+        window.location.reload();
+      } catch (err) {
+        status.textContent = `Restore failed: ${err.message}`;
+        button.disabled = false;
+      }
+    }
+
+    function formatBytes(bytes) {
+      const value = Number(bytes) || 0;
+      if (value < 1024) return `${value} B`;
+      if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+      if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+      return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    }
+
     async function saveAppSettings() {
       const isCloud = !document.getElementById('settings-cloud-model-container').classList.contains('hidden');
       
@@ -2220,8 +2579,8 @@
 
       const payload = {
         data_path: document.getElementById('settings-data-path').value.trim(),
-        ollama_url: document.getElementById('settings-ollama-url').value.trim(),
-        ollama_api_key: document.getElementById('settings-ollama-api-key').value.trim(),
+        api_url: document.getElementById('settings-ollama-url').value.trim(),
+        api_key: document.getElementById('settings-ollama-api-key').value.trim(),
         selected_model: selectedModel,
         page_size: newPageSize,
       };
@@ -2261,6 +2620,31 @@
         loadCompanies();
       } catch (err) {
         toast(`Rebuild failed: ${err.message}`, 'error');
+      }
+    }
+
+    // Format an ISO timestamp into a short local date/time string for review items.
+    function formatReviewTime(iso) {
+      if (!iso) return '';
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        return d.toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit',
+        });
+      } catch (_) {
+        return iso;
+      }
+    }
+
+    // Store a manually entered company name for a review row, keyed by review file name.
+    function storeReviewCompanyName(fileName, value) {
+      const trimmed = String(value || '').trim();
+      if (trimmed) {
+        reviewInlineCompanyNames.set(fileName, trimmed);
+      } else {
+        reviewInlineCompanyNames.delete(fileName);
       }
     }
 

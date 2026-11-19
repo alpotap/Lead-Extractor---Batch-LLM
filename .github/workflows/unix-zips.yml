@@ -9,6 +9,22 @@ permissions:
   contents: write
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements.txt pytest
+      - run: pytest -q
+      - run: python check_js.py
+      - run: bash scripts/build_release_zip.sh linux
+      - name: Verify release ZIP excludes archived UI
+        run: python -c "from zipfile import ZipFile; z=ZipFile('dist/Lead-Extractor-linux.zip'); names=z.namelist(); assert not any(n.endswith('app.py') or '/archive/' in n or n.lower().endswith('.bat') for n in names); assert 'Lead-Extractor-linux/server.py' in names; assert 'Lead-Extractor-linux/static/index.html' in names"
   package:
     strategy:
       fail-fast: false

@@ -104,7 +104,9 @@ if defined OLLAMA_EXE (
 )
 
 echo Starting Lead Extractor. Keep this window open while using the app.
-".venv\Scripts\python.exe" -m streamlit run app.py --server.address 0.0.0.0
+echo Open this computer at: http://127.0.0.1:8502
+start "" powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:8502'"
+".venv\Scripts\python.exe" server.py
 if errorlevel 1 goto :failed
 exit /b 0
 
