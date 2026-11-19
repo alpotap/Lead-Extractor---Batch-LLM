@@ -15,7 +15,7 @@ Extract data from webpages automatically - all you need is a URL!
 4. Use the data! The tool will find:
    **Contacts, emails, addresses, working hours, business definitions, links to socials** and assign **categories**.
 
-![Video Title](https://img.youtube.com/vi/svA6KY2tfQg/0.jpg)
+[![Watch the video](https://img.youtube.com/vi/svA6KY2tfQg/0.jpg)](https://youtu.be/svA6KY2tfQg)
 
 You want a faster way? Read the detailed guide below
 
