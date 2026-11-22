@@ -350,6 +350,13 @@
                 <p class="mt-1 text-[11px] text-slate-400">One day or day range per line, in the format “Day: hours”.</p>
               </div>
 
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 mb-1">Company Summary / Notes</label>
+                <textarea id="detail-company-notes" rows="4" placeholder="Company overview, products, services, and other useful details…"
+                  class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500"></textarea>
+                <p class="mt-1 text-[11px] text-slate-400">One note per line. Existing extracted notes are kept here.</p>
+              </div>
+
               <div class="pt-2">
                 <button onclick="saveCompanyDetails()" class="px-5 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-semibold transition shadow-sm">
                   Save Company Changes
@@ -1472,6 +1479,11 @@
           const hours = String(item.hours || item.open || item.time || '').trim();
           return day && hours ? `${day}: ${hours}` : (day || hours);
         }).filter(Boolean).join('\n');
+        const companyNotes = Array.isArray(c.notes) ? c.notes : (c.notes ? [c.notes] : []);
+        document.getElementById('detail-company-notes').value = companyNotes.map(note => {
+          if (typeof note === 'string') return note;
+          return String(note?.text || note?.summary || '');
+        }).filter(Boolean).join('\n');
 
         // Contacts
         renderContactsTable(c.contacts || []);
@@ -1635,6 +1647,7 @@
             ? { day: '', hours: line.trim() }
             : { day: line.slice(0, colon).trim(), hours: line.slice(colon + 1).trim() };
         }).filter(item => item.day || item.hours),
+        notes: document.getElementById('detail-company-notes').value.split('\n').map(s => s.trim()).filter(Boolean),
         contacts: contacts,
       };
 
