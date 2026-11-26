@@ -417,11 +417,11 @@
               <div class="grid grid-cols-2 gap-3">
                 <div>
                   <label class="block text-xs font-semibold text-slate-600 mb-1">Last Contacted</label>
-                  <input type="text" id="detail-crm-last-contact" placeholder="DD/MM/YYYY" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
+                  <input type="date" id="detail-crm-last-contact" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500">
                 </div>
                 <div>
                   <label class="block text-xs font-semibold text-slate-600 mb-1">Next Follow-up</label>
-                  <input type="text" id="detail-crm-next-followup" placeholder="DD/MM/YYYY" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500 font-medium text-amber-700">
+                  <input type="date" id="detail-crm-next-followup" class="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-brand-500 font-medium text-amber-700">
                 </div>
               </div>
 
@@ -1494,8 +1494,8 @@
         // CRM Controls
         populateCrmStatuses(crm.status);
         document.getElementById('detail-crm-rating').value = crm.rating || '';
-        document.getElementById('detail-crm-last-contact').value = crm.last_contacted || '';
-        document.getElementById('detail-crm-next-followup').value = crm.next_followup || '';
+        document.getElementById('detail-crm-last-contact').value = crmDateInputValue(crm.last_contacted);
+        document.getElementById('detail-crm-next-followup').value = crmDateInputValue(crm.next_followup);
 
         // Notes timeline
         renderNotesTimeline(crm.notes || []);
@@ -1534,10 +1534,19 @@
 
     function populateCrmStatuses(currentStatus) {
       const select = document.getElementById('detail-crm-status');
-      const statuses = ["New", "Contacted", "Follow-up Scheduled", "In Progress", "Qualified", "Unqualified", "Customer", "Lost"];
+      const statuses = ["New", "Contacted", "Email only", "Follow-up Scheduled", "In Progress", "Qualified", "Unqualified", "Customer", "Lost"];
       if (currentStatus && !statuses.includes(currentStatus)) statuses.push(currentStatus);
 
       select.innerHTML = statuses.map(s => `<option value="${escapeHtml(s)}" ${s === currentStatus ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('');
+    }
+
+    function crmDateInputValue(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+      const match = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (!match) return '';
+      return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
     }
 
     // Contacts table
