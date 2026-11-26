@@ -55,7 +55,7 @@ try {
     if (Test-Path -LiteralPath $OutputPath) {
         Remove-Item -LiteralPath $OutputPath -Force
     }
-    Compress-Archive -Path (Join-Path $packageDirectory "*") -DestinationPath $OutputPath -CompressionLevel Optimal
+    Compress-Archive -Path $packageDirectory -DestinationPath $OutputPath -CompressionLevel Optimal
     Write-Output "Created $OutputPath"
 }
 finally {
